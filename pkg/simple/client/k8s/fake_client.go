@@ -17,6 +17,7 @@ limitations under the License.
 package k8s
 
 import (
+	promresourcesclient "github.com/coreos/prometheus-operator/pkg/client/versioned"
 	snapshotclient "github.com/kubernetes-csi/external-snapshotter/v2/pkg/client/clientset/versioned"
 	istioclient "istio.io/client-go/pkg/clientset/versioned"
 	apiextensionsclient "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
@@ -46,6 +47,8 @@ type FakeClient struct {
 
 	ApiExtensionClient apiextensionsclient.Interface
 
+	prometheusClient promresourcesclient.Interface
+
 	MasterURL string
 
 	KubeConfig *rest.Config
@@ -54,7 +57,8 @@ type FakeClient struct {
 func NewFakeClientSets(k8sClient kubernetes.Interface, discoveryClient *discovery.DiscoveryClient,
 	kubeSphereClient kubesphere.Interface, applicationClient applicationclientset.Interface,
 	istioClient istioclient.Interface, snapshotClient snapshotclient.Interface,
-	apiextensionsclient apiextensionsclient.Interface, masterURL string, kubeConfig *rest.Config) Client {
+	apiextensionsclient apiextensionsclient.Interface, prometheusClient promresourcesclient.Interface,
+	masterURL string, kubeConfig *rest.Config) Client {
 	return &FakeClient{
 		K8sClient:          k8sClient,
 		DiscoveryClient:    discoveryClient,
@@ -63,6 +67,7 @@ func NewFakeClientSets(k8sClient kubernetes.Interface, discoveryClient *discover
 		IstioClient:        istioClient,
 		SnapshotClient:     snapshotClient,
 		ApiExtensionClient: apiextensionsclient,
+		prometheusClient:   prometheusClient,
 		MasterURL:          masterURL,
 		KubeConfig:         kubeConfig,
 	}
@@ -94,6 +99,10 @@ func (n *FakeClient) ApiExtensions() apiextensionsclient.Interface {
 
 func (n *FakeClient) Discovery() discovery.DiscoveryInterface {
 	return n.DiscoveryClient
+}
+
+func (n *FakeClient) Prometheus() promresourcesclient.Interface {
+	return n.prometheusClient
 }
 
 func (n *FakeClient) Master() string {

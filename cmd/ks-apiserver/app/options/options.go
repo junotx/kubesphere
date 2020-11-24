@@ -20,6 +20,9 @@ import (
 	"crypto/tls"
 	"flag"
 	"fmt"
+	"net/http"
+	"strings"
+
 	cliflag "k8s.io/component-base/cli/flag"
 	"k8s.io/klog"
 	"kubesphere.io/kubesphere/pkg/apiserver"
@@ -28,6 +31,7 @@ import (
 	genericoptions "kubesphere.io/kubesphere/pkg/server/options"
 	auditingclient "kubesphere.io/kubesphere/pkg/simple/client/auditing/elasticsearch"
 	"kubesphere.io/kubesphere/pkg/simple/client/cache"
+	"kubesphere.io/kubesphere/pkg/simple/client/customalerting"
 	"kubesphere.io/kubesphere/pkg/simple/client/devops/jenkins"
 	eventsclient "kubesphere.io/kubesphere/pkg/simple/client/events/elasticsearch"
 	"kubesphere.io/kubesphere/pkg/simple/client/k8s"
@@ -37,8 +41,6 @@ import (
 	"kubesphere.io/kubesphere/pkg/simple/client/s3"
 	fakes3 "kubesphere.io/kubesphere/pkg/simple/client/s3/fake"
 	"kubesphere.io/kubesphere/pkg/simple/client/sonarqube"
-	"net/http"
-	"strings"
 )
 
 type ServerRunOptions struct {
@@ -78,6 +80,7 @@ func (s *ServerRunOptions) Flags() (fss cliflag.NamedFlagSets) {
 	s.MultiClusterOptions.AddFlags(fss.FlagSet("multicluster"), s.MultiClusterOptions)
 	s.EventsOptions.AddFlags(fss.FlagSet("events"), s.EventsOptions)
 	s.AuditingOptions.AddFlags(fss.FlagSet("auditing"), s.AuditingOptions)
+	s.CustomAlertingOptions.AddFlags(fss.FlagSet("customalerting"), s.CustomAlertingOptions)
 
 	fs = fss.FlagSet("klog")
 	local := flag.NewFlagSet("klog", flag.ExitOnError)
@@ -105,7 +108,8 @@ func (s *ServerRunOptions) NewAPIServer(stopCh <-chan struct{}) (*apiserver.APIS
 	apiServer.KubernetesClient = kubernetesClient
 
 	informerFactory := informers.NewInformerFactories(kubernetesClient.Kubernetes(), kubernetesClient.KubeSphere(),
-		kubernetesClient.Istio(), kubernetesClient.Application(), kubernetesClient.Snapshot(), kubernetesClient.ApiExtensions())
+		kubernetesClient.Istio(), kubernetesClient.Application(), kubernetesClient.Snapshot(), kubernetesClient.ApiExtensions(),
+		kubernetesClient.Prometheus())
 	apiServer.InformerFactory = informerFactory
 
 	if s.MonitoringOptions == nil || len(s.MonitoringOptions.Endpoint) == 0 {
@@ -193,6 +197,14 @@ func (s *ServerRunOptions) NewAPIServer(stopCh <-chan struct{}) (*apiserver.APIS
 			return nil, fmt.Errorf("failed to connect to openpitrix, please check openpitrix status, error: %v", err)
 		}
 		apiServer.OpenpitrixClient = opClient
+	}
+
+	if s.CustomAlertingOptions != nil {
+		customAlertingClient, err := customalerting.NewRuleClient(s.CustomAlertingOptions)
+		if err != nil {
+			return nil, fmt.Errorf("failed to init custom alerting client")
+		}
+		apiServer.CustomAlertingClient = customAlertingClient
 	}
 
 	server := &http.Server{

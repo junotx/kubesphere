@@ -8,13 +8,13 @@ go 1.12
 
 require (
 	code.cloudfoundry.org/bytefmt v0.0.0-20190710193110-1eb035ffe2b6
-	github.com/NYTimes/gziphandler v1.1.1 // indirect
 	github.com/PuerkitoBio/goquery v1.5.0
 	github.com/asaskevich/govalidator v0.0.0-20190424111038-f61b66f89f4a
 	github.com/aws/aws-sdk-go v1.30.12
 	github.com/beevik/etree v1.1.0
 	github.com/container-storage-interface/spec v1.2.0
 	github.com/containernetworking/cni v0.8.0
+	github.com/coreos/prometheus-operator v0.38.3
 	github.com/davecgh/go-spew v1.1.1
 	github.com/dgrijalva/jwt-go v3.2.0+incompatible
 	github.com/docker/distribution v2.7.1+incompatible
@@ -27,6 +27,7 @@ require (
 	github.com/emicklei/go-restful-openapi v1.4.1
 	github.com/emirpasic/gods v1.12.0 // indirect
 	github.com/fatih/structs v1.1.0
+	github.com/ghodss/yaml v1.0.0
 	github.com/go-ldap/ldap v3.0.3+incompatible
 	github.com/go-logr/zapr v0.1.1 // indirect
 	github.com/go-openapi/loads v0.19.5
@@ -40,11 +41,9 @@ require (
 	github.com/golang/mock v1.2.0
 	github.com/golang/protobuf v1.4.3
 	github.com/google/go-cmp v0.4.0
-	github.com/google/go-querystring v1.0.0 // indirect
 	github.com/google/uuid v1.1.1
 	github.com/gorilla/mux v1.7.1 // indirect
 	github.com/gorilla/websocket v1.4.1
-	github.com/hashicorp/go-version v1.2.0 // indirect
 	github.com/json-iterator/go v1.1.10
 	github.com/kelseyhightower/envconfig v1.4.0 // indirect
 	github.com/kiali/kiali v1.26.0
@@ -70,7 +69,7 @@ require (
 	github.com/spf13/cobra v0.0.5
 	github.com/spf13/pflag v1.0.5
 	github.com/spf13/viper v1.4.0
-	github.com/stretchr/testify v1.4.0
+	github.com/stretchr/testify v1.5.1
 	github.com/xanzy/ssh-agent v0.2.1 // indirect
 	golang.org/x/crypto v0.0.0-20200422194213-44a606286825
 	golang.org/x/net v0.0.0-20200625001655-4c5254603344
@@ -88,7 +87,7 @@ require (
 	k8s.io/apimachinery v0.17.5
 	k8s.io/apiserver v0.17.3
 	k8s.io/cli-runtime v0.17.3
-	k8s.io/client-go v0.17.5
+	k8s.io/client-go v12.0.0+incompatible
 	k8s.io/code-generator v0.17.3
 	k8s.io/component-base v0.17.3
 	k8s.io/gengo v0.0.0-20191120174120-e74f70b9b27e // indirect

@@ -17,6 +17,9 @@ limitations under the License.
 package k8s
 
 import (
+	"strings"
+
+	promresourcesclient "github.com/coreos/prometheus-operator/pkg/client/versioned"
 	snapshotclient "github.com/kubernetes-csi/external-snapshotter/v2/pkg/client/clientset/versioned"
 	istioclient "istio.io/client-go/pkg/clientset/versioned"
 	apiextensionsclient "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
@@ -26,7 +29,6 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	kubesphere "kubesphere.io/kubesphere/pkg/client/clientset/versioned"
 	applicationclientset "sigs.k8s.io/application/pkg/client/clientset/versioned"
-	"strings"
 )
 
 type Client interface {
@@ -37,6 +39,7 @@ type Client interface {
 	Snapshot() snapshotclient.Interface
 	ApiExtensions() apiextensionsclient.Interface
 	Discovery() discovery.DiscoveryInterface
+	Prometheus() promresourcesclient.Interface
 	Master() string
 	Config() *rest.Config
 }
@@ -58,6 +61,8 @@ type kubernetesClient struct {
 	snapshot snapshotclient.Interface
 
 	apiextensions apiextensionsclient.Interface
+
+	prometheus promresourcesclient.Interface
 
 	master string
 
@@ -82,6 +87,7 @@ func NewKubernetesClientOrDie(options *KubernetesOptions) Client {
 		application:     applicationclientset.NewForConfigOrDie(config),
 		snapshot:        snapshotclient.NewForConfigOrDie(config),
 		apiextensions:   apiextensionsclient.NewForConfigOrDie(config),
+		prometheus:      promresourcesclient.NewForConfigOrDie(config),
 		master:          config.Host,
 		config:          config,
 	}
@@ -145,6 +151,11 @@ func NewKubernetesClient(options *KubernetesOptions) (Client, error) {
 		return nil, err
 	}
 
+	k.prometheus, err = promresourcesclient.NewForConfig(config)
+	if err != nil {
+		return nil, err
+	}
+
 	k.master = options.Master
 	k.config = config
 
@@ -177,6 +188,10 @@ func (k *kubernetesClient) Snapshot() snapshotclient.Interface {
 
 func (k *kubernetesClient) ApiExtensions() apiextensionsclient.Interface {
 	return k.apiextensions
+}
+
+func (k *kubernetesClient) Prometheus() promresourcesclient.Interface {
+	return k.prometheus
 }
 
 // master address used to generate kubeconfig for downloading
