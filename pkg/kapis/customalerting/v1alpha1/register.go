@@ -46,8 +46,8 @@ func AddToContainer(container *restful.Container, informers informers.InformerFa
 	ws := runtime.NewWebService(GroupVersion)
 
 	ws.Route(ws.GET("/rules").
-		To(handler.handleListAlertingRules).
-		Doc("list alerting rules with cluster level").
+		To(handler.handleListCustomAlertingRules).
+		Doc("list the cluster-level custom alerting rules").
 		Param(ws.QueryParameter("name", "rule name")).
 		Param(ws.QueryParameter("state", "state of a rule based on its alerts, one of `firing`, `pending`, `inactive`")).
 		Param(ws.QueryParameter("health", "health state of a rule based on the last execution, one of `ok`, `err`, `unknown`")).
@@ -56,38 +56,12 @@ func AddToContainer(container *restful.Container, informers informers.InformerFa
 		Param(ws.QueryParameter("sort_type", "sort type, one of `asc`, `desc`")).
 		Param(ws.QueryParameter("offset", "offset of the result set").DataType("integer").DefaultValue("0")).
 		Param(ws.QueryParameter("limit", "limit size of the result set").DataType("integer").DefaultValue("10")).
-		Returns(http.StatusOK, ksapi.StatusOK, customalertingv1alpha1.AlertingRuleList{}).
-		Metadata(restfulspec.KeyOpenAPITags, []string{constants.CustomAlertingTag}))
-
-	ws.Route(ws.GET("/namespaces/{namespace}/rules").
-		To(handler.handleListAlertingRules).
-		Doc("list alerting rules in specified namespace").
-		Param(ws.QueryParameter("name", "rule name")).
-		Param(ws.QueryParameter("state", "state of a rule based on its alerts, one of `firing`, `pending`, `inactive`")).
-		Param(ws.QueryParameter("health", "health state of a rule based on the last execution, one of `ok`, `err`, `unknown`")).
-		Param(ws.QueryParameter("label_filters", "label filters, concatenating multiple filters with commas, equal symbol for exact query, wave symbol for fuzzy query e.g. name~a").DataFormat("key=%s,key~%s")).
-		Param(ws.QueryParameter("sort_field", "sort field, one of `name`, `lastEvaluation`, `evaluationTime`")).
-		Param(ws.QueryParameter("sort_type", "sort type, one of `asc`, `desc`")).
-		Param(ws.QueryParameter("offset", "offset of the result set").DataType("integer").DefaultValue("0")).
-		Param(ws.QueryParameter("limit", "limit size of the result set").DataType("integer").DefaultValue("10")).
-		Returns(http.StatusOK, ksapi.StatusOK, customalertingv1alpha1.AlertingRuleList{}).
-		Metadata(restfulspec.KeyOpenAPITags, []string{constants.CustomAlertingTag}))
-
-	ws.Route(ws.GET("/rules/{ruleId}").
-		To(handler.handleGetAlertingRules).
-		Doc("get an alerting rule with specified id and cluster level").
-		Returns(http.StatusOK, ksapi.StatusOK, customalertingv1alpha1.AlertingRule{}).
-		Metadata(restfulspec.KeyOpenAPITags, []string{constants.CustomAlertingTag}))
-
-	ws.Route(ws.GET("/namespaces/{namespace}/rules/{ruleId}").
-		To(handler.handleGetAlertingRules).
-		Doc("get an alerting rule with specified id in specified namespace").
-		Returns(http.StatusOK, ksapi.StatusOK, customalertingv1alpha1.AlertingRule{}).
+		Returns(http.StatusOK, ksapi.StatusOK, customalertingv1alpha1.GettableAlertingRuleList{}).
 		Metadata(restfulspec.KeyOpenAPITags, []string{constants.CustomAlertingTag}))
 
 	ws.Route(ws.GET("/alerts").
-		To(handler.handleListAlerts).
-		Doc("list alerts with cluster level").
+		To(handler.handleListCustomRulesAlerts).
+		Doc("list the alerts of the cluster-level custom alerting rules").
 		Param(ws.QueryParameter("state", "state, one of `firing`, `pending`, `inactive`")).
 		Param(ws.QueryParameter("label_filters", "label filters, concatenating multiple filters with commas, equal symbol for exact query, wave symbol for fuzzy query e.g. name~a").DataFormat("key=%s,key~%s")).
 		Param(ws.QueryParameter("offset", "offset of the result set").DataType("integer").DefaultValue("0")).
@@ -95,66 +69,128 @@ func AddToContainer(container *restful.Container, informers informers.InformerFa
 		Returns(http.StatusOK, ksapi.StatusOK, customalertingv1alpha1.AlertList{}).
 		Metadata(restfulspec.KeyOpenAPITags, []string{constants.CustomAlertingTag}))
 
-	ws.Route(ws.GET("/namespaces/{namespace}/alerts").
-		To(handler.handleListAlerts).
-		Doc("list alerts in specified namespace.").
-		Param(ws.QueryParameter("state", "state, one of `firing`, `pending`, `inactive`")).
-		Param(ws.QueryParameter("label_filters", "label filters, concatenating multiple filters with commas, equal symbol for exact query, wave symbol for fuzzy query e.g. name~a").DataFormat("key=%s,key~%s")).
-		Param(ws.QueryParameter("offset", "offset of the result set").DataType("integer").DefaultValue("0")).
-		Param(ws.QueryParameter("limit", "limit size of the result set").DataType("integer").DefaultValue("10")).
-		Returns(http.StatusOK, ksapi.StatusOK, customalertingv1alpha1.AlertList{}).
+	ws.Route(ws.GET("/rules/{rule_name}").
+		To(handler.handleGetCustomAlertingRule).
+		Doc("get the cluster-level custom alerting rule with the specified name").
+		Returns(http.StatusOK, ksapi.StatusOK, customalertingv1alpha1.GettableAlertingRule{}).
 		Metadata(restfulspec.KeyOpenAPITags, []string{constants.CustomAlertingTag}))
 
-	ws.Route(ws.GET("/rules/{ruleId}/alerts").
-		To(handler.handleListAlertsWithRuleId).
-		Doc("get alerts of rule with specified id and cluster level").
+	ws.Route(ws.GET("/rules/{rule_name}/alerts").
+		To(handler.handleListCustomSpecifiedRuleAlerts).
+		Doc("list the alerts of the cluster-level custom alerting rule with the specified name").
 		Returns(http.StatusOK, ksapi.StatusOK, []customalertingv1alpha1.Alert{}).
-		Metadata(restfulspec.KeyOpenAPITags, []string{constants.CustomAlertingTag}))
-
-	ws.Route(ws.GET("/namespaces/{namespace}/rules/{ruleId}/alerts").
-		To(handler.handleListAlertsWithRuleId).
-		Doc("get alerts of rule with specified id in specified namespace").
-		Returns(http.StatusOK, ksapi.StatusOK, []customalertingv1alpha1.Alert{}).
-		Metadata(restfulspec.KeyOpenAPITags, []string{constants.CustomAlertingTag}))
-
-	ws.Route(ws.PUT("/rules/{ruleId}").
-		To(handler.handleUpdateAlertingRule).
-		Doc("update an alerting rule with specified rule id and cluster level. return new id of the updated rule").
-		Reads(customalertingv1alpha1.AlertingRule{}).
-		Returns(http.StatusOK, ksapi.StatusOK, "").
-		Metadata(restfulspec.KeyOpenAPITags, []string{constants.CustomAlertingTag}))
-
-	ws.Route(ws.PUT("/namespaces/{namespace}/rules/{ruleId}").
-		To(handler.handleUpdateAlertingRule).
-		Doc("update an alerting rule with specified rule id into specified namespace. return new id of the updated rule").
-		Reads(customalertingv1alpha1.AlertingRule{}).
-		Returns(http.StatusOK, ksapi.StatusOK, "").
 		Metadata(restfulspec.KeyOpenAPITags, []string{constants.CustomAlertingTag}))
 
 	ws.Route(ws.POST("/rules").
-		To(handler.handleCreateAlertingRule).
-		Doc("create an alerting rule with cluster level. return id of the created rule").
-		Reads(customalertingv1alpha1.AlertingRule{}).
-		Returns(http.StatusOK, ksapi.StatusOK, "").
+		To(handler.handleCreateCustomAlertingRule).
+		Doc("create a cluster-level custom alerting rule").
+		Reads(customalertingv1alpha1.PostableAlertingRule{}).
+		Returns(http.StatusOK, ksapi.StatusOK, nil).
+		Metadata(restfulspec.KeyOpenAPITags, []string{constants.CustomAlertingTag}))
+
+	ws.Route(ws.PUT("/rules/{rule_name}").
+		To(handler.handleUpdateCustomAlertingRule).
+		Doc("update the cluster-level custom alerting rule with the specified name").
+		Reads(customalertingv1alpha1.PostableAlertingRule{}).
+		Returns(http.StatusOK, ksapi.StatusOK, nil).
+		Metadata(restfulspec.KeyOpenAPITags, []string{constants.CustomAlertingTag}))
+
+	ws.Route(ws.DELETE("/rules/{rule_name}").
+		To(handler.handleDeleteCustomAlertingRule).
+		Doc("delete the cluster-level custom alerting rule with the specified name").
+		Returns(http.StatusOK, ksapi.StatusOK, nil).
+		Metadata(restfulspec.KeyOpenAPITags, []string{constants.CustomAlertingTag}))
+
+	ws.Route(ws.GET("/namespaces/{namespace}/rules").
+		To(handler.handleListCustomAlertingRules).
+		Doc("list the custom alerting rules in the specified namespace").
+		Param(ws.QueryParameter("name", "rule name")).
+		Param(ws.QueryParameter("state", "state of a rule based on its alerts, one of `firing`, `pending`, `inactive`")).
+		Param(ws.QueryParameter("health", "health state of a rule based on the last execution, one of `ok`, `err`, `unknown`")).
+		Param(ws.QueryParameter("label_filters", "label filters, concatenating multiple filters with commas, equal symbol for exact query, wave symbol for fuzzy query e.g. name~a").DataFormat("key=%s,key~%s")).
+		Param(ws.QueryParameter("sort_field", "sort field, one of `name`, `lastEvaluation`, `evaluationTime`")).
+		Param(ws.QueryParameter("sort_type", "sort type, one of `asc`, `desc`")).
+		Param(ws.QueryParameter("offset", "offset of the result set").DataType("integer").DefaultValue("0")).
+		Param(ws.QueryParameter("limit", "limit size of the result set").DataType("integer").DefaultValue("10")).
+		Returns(http.StatusOK, ksapi.StatusOK, customalertingv1alpha1.GettableAlertingRuleList{}).
+		Metadata(restfulspec.KeyOpenAPITags, []string{constants.CustomAlertingTag}))
+
+	ws.Route(ws.GET("/namespaces/{namespace}/alerts").
+		To(handler.handleListCustomRulesAlerts).
+		Doc("list the alerts of the custom alerting rules in the specified namespace.").
+		Param(ws.QueryParameter("state", "state, one of `firing`, `pending`, `inactive`")).
+		Param(ws.QueryParameter("label_filters", "label filters, concatenating multiple filters with commas, equal symbol for exact query, wave symbol for fuzzy query e.g. name~a").DataFormat("key=%s,key~%s")).
+		Param(ws.QueryParameter("offset", "offset of the result set").DataType("integer").DefaultValue("0")).
+		Param(ws.QueryParameter("limit", "limit size of the result set").DataType("integer").DefaultValue("10")).
+		Returns(http.StatusOK, ksapi.StatusOK, customalertingv1alpha1.AlertList{}).
+		Metadata(restfulspec.KeyOpenAPITags, []string{constants.CustomAlertingTag}))
+
+	ws.Route(ws.GET("/namespaces/{namespace}/rules/{rule_name}").
+		To(handler.handleGetCustomAlertingRule).
+		Doc("get the custom alerting rule with the specified name in the specified namespace").
+		Returns(http.StatusOK, ksapi.StatusOK, customalertingv1alpha1.GettableAlertingRule{}).
+		Metadata(restfulspec.KeyOpenAPITags, []string{constants.CustomAlertingTag}))
+
+	ws.Route(ws.GET("/namespaces/{namespace}/rules/{rule_name}/alerts").
+		To(handler.handleListCustomSpecifiedRuleAlerts).
+		Doc("get the alerts of the custom alerting rule with the specified name in the specified namespace").
+		Returns(http.StatusOK, ksapi.StatusOK, []customalertingv1alpha1.Alert{}).
 		Metadata(restfulspec.KeyOpenAPITags, []string{constants.CustomAlertingTag}))
 
 	ws.Route(ws.POST("/namespaces/{namespace}/rules").
-		To(handler.handleCreateAlertingRule).
-		Doc("create an alerting rule into a specified namespace. return id of the created rule").
-		Reads(customalertingv1alpha1.AlertingRule{}).
+		To(handler.handleCreateCustomAlertingRule).
+		Doc("create a custom alerting rule in the specified namespace").
+		Reads(customalertingv1alpha1.PostableAlertingRule{}).
 		Returns(http.StatusOK, ksapi.StatusOK, "").
 		Metadata(restfulspec.KeyOpenAPITags, []string{constants.CustomAlertingTag}))
 
-	ws.Route(ws.DELETE("/rules/{ruleId}").
-		To(handler.handleDeleteAlertingRule).
-		Doc("delete an alerting rule with specified rule id and cluster level").
+	ws.Route(ws.PUT("/namespaces/{namespace}/rules/{rule_name}").
+		To(handler.handleUpdateCustomAlertingRule).
+		Doc("update the custom alerting rule with the specified name in the specified namespace").
+		Reads(customalertingv1alpha1.PostableAlertingRule{}).
+		Returns(http.StatusOK, ksapi.StatusOK, "").
+		Metadata(restfulspec.KeyOpenAPITags, []string{constants.CustomAlertingTag}))
+
+	ws.Route(ws.DELETE("/namespaces/{namespace}/rules/{rule_name}").
+		To(handler.handleDeleteCustomAlertingRule).
+		Doc("delete the custom alerting rule with the specified rule name in the specified namespace").
 		Returns(http.StatusOK, ksapi.StatusOK, nil).
 		Metadata(restfulspec.KeyOpenAPITags, []string{constants.CustomAlertingTag}))
 
-	ws.Route(ws.DELETE("/namespaces/{namespace}/rules/{ruleId}").
-		To(handler.handleDeleteAlertingRule).
-		Doc("delete an alerting rule with specified rule id from specified namespace").
-		Returns(http.StatusOK, ksapi.StatusOK, nil).
+	ws.Route(ws.GET("/builtin/rules").
+		To(handler.handleListBuiltinAlertingRules).
+		Doc("list the builtin(non-custom) alerting rules").
+		Param(ws.QueryParameter("name", "rule name")).
+		Param(ws.QueryParameter("state", "state of a rule based on its alerts, one of `firing`, `pending`, `inactive`")).
+		Param(ws.QueryParameter("health", "health state of a rule based on the last execution, one of `ok`, `err`, `unknown`")).
+		Param(ws.QueryParameter("label_filters", "label filters, concatenating multiple filters with commas, equal symbol for exact query, wave symbol for fuzzy query e.g. name~a").DataFormat("key=%s,key~%s")).
+		Param(ws.QueryParameter("sort_field", "sort field, one of `name`, `lastEvaluation`, `evaluationTime`")).
+		Param(ws.QueryParameter("sort_type", "sort type, one of `asc`, `desc`")).
+		Param(ws.QueryParameter("offset", "offset of the result set").DataType("integer").DefaultValue("0")).
+		Param(ws.QueryParameter("limit", "limit size of the result set").DataType("integer").DefaultValue("10")).
+		Returns(http.StatusOK, ksapi.StatusOK, customalertingv1alpha1.GettableAlertingRuleList{}).
+		Metadata(restfulspec.KeyOpenAPITags, []string{constants.CustomAlertingTag}))
+
+	ws.Route(ws.GET("/builtin/alerts").
+		To(handler.handleListBuiltinRulesAlerts).
+		Doc("list the alerts of the builtin(non-custom) rules").
+		Param(ws.QueryParameter("state", "state, one of `firing`, `pending`, `inactive`")).
+		Param(ws.QueryParameter("label_filters", "label filters, concatenating multiple filters with commas, equal symbol for exact query, wave symbol for fuzzy query e.g. name~a").DataFormat("key=%s,key~%s")).
+		Param(ws.QueryParameter("offset", "offset of the result set").DataType("integer").DefaultValue("0")).
+		Param(ws.QueryParameter("limit", "limit size of the result set").DataType("integer").DefaultValue("10")).
+		Returns(http.StatusOK, ksapi.StatusOK, customalertingv1alpha1.AlertList{}).
+		Metadata(restfulspec.KeyOpenAPITags, []string{constants.CustomAlertingTag}))
+
+	ws.Route(ws.GET("/builtin/rules/{rule_id}").
+		To(handler.handleGetBuiltinAlertingRule).
+		Doc("get the builtin(non-custom) alerting rule with specified id").
+		Returns(http.StatusOK, ksapi.StatusOK, customalertingv1alpha1.GettableAlertingRule{}).
+		Metadata(restfulspec.KeyOpenAPITags, []string{constants.CustomAlertingTag}))
+
+	ws.Route(ws.GET("/builtin/rules/{rule_id}/alerts").
+		To(handler.handleListBuiltinSpecifiedRuleAlerts).
+		Doc("list the alerts of the builtin(non-custom) alerting rule with the specified id").
+		Returns(http.StatusOK, ksapi.StatusOK, []customalertingv1alpha1.Alert{}).
 		Metadata(restfulspec.KeyOpenAPITags, []string{constants.CustomAlertingTag}))
 
 	container.Add(ws)

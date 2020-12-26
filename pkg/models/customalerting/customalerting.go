@@ -2,6 +2,7 @@ package customalerting
 
 import (
 	"context"
+	"sort"
 	"strings"
 
 	promresourcesv1 "github.com/coreos/prometheus-operator/pkg/apis/monitoring/v1"
@@ -10,6 +11,7 @@ import (
 	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	coreinformersv1 "k8s.io/client-go/informers/core/v1"
 	"kubesphere.io/kubesphere/pkg/api/customalerting/v1alpha1"
 	"kubesphere.io/kubesphere/pkg/constants"
@@ -19,10 +21,9 @@ import (
 )
 
 const (
-	rulerNamespace                 = constants.KubeSphereMonitoringNamespace
-	customAlertingRuleGroupDefault = "alerting.custom.defaults"
-
-	errThanosRulerNotEnabled = "operation to custom alerting rule can not be done because thanos ruler is not enabled"
+	rulerNamespace                  = constants.KubeSphereMonitoringNamespace
+	customRuleGroupDefault          = "alerting.custom.defaults"
+	customRuleResourceLabelKeyLevel = "custom-alerting-rule-level"
 )
 
 var (
@@ -30,24 +31,41 @@ var (
 	maxConfigMapDataSize = int(float64(maxSecretSize) * 0.45)
 )
 
-// Operator contains all operations to alerting rules. The operations will involve manipulations of prometheusrule
-// custom resources where the rules are persisted, and querying the rules state from prometheus endpoint and thanos
-// ruler endpoint.
-// For the following apis against prometheus and thanos ruler, if namespace is empty, do operations to alerting rules
-// with cluster level, or do operations only to rules of the specified namespaces.
-// The rules selected by prometheus are considered to built-in and non-custom rules which can only be modified.
+// Operator contains all operations to alerting rules. The operations may involve manipulations of prometheusrule
+// custom resources where the rules are persisted, and querying the rules state from prometheus endpoint and
+// thanos ruler endpoint.
+// For the following apis, if namespace is empty, do operations to alerting rules with cluster level,
+// or do operations only to rules of the specified namespaces.
 // All custom rules will be configured for thanos ruler, so the operations to custom alerting rule can not be done
 // if thanos ruler is not enabled.
 type Operator interface {
-	GetAlertingRule(ctx context.Context, namespace, ruleId string) (*v1alpha1.AlertingRule, error)
-	ListAlertingRules(ctx context.Context, namespace string, query *v1alpha1.AlertingRuleQuery) (*v1alpha1.AlertingRuleList, error)
+	// ListCustomAlertingRules lists the custom alerting rules.
+	ListCustomAlertingRules(ctx context.Context, namespace string,
+		queryParams *v1alpha1.AlertingRuleQueryParams) (*v1alpha1.GettableAlertingRuleList, error)
+	// ListCustomRulesAlerts lists the alerts of the custom alerting rules.
+	ListCustomRulesAlerts(ctx context.Context, namespace string,
+		queryParams *v1alpha1.AlertQueryParams) (*v1alpha1.AlertList, error)
+	// GetCustomAlertingRule gets the custom alerting rule with the given name.
+	GetCustomAlertingRule(ctx context.Context, namespace, ruleName string) (*v1alpha1.GettableAlertingRule, error)
+	// ListCustomSpecifiedRuleAlerts lists the alerts of the custom alerting rule with the given name.
+	ListCustomSpecifiedRuleAlerts(ctx context.Context, namespace, ruleName string) ([]*v1alpha1.Alert, error)
+	// CreateCustomAlertingRule creates a custom alerting rule.
+	CreateCustomAlertingRule(namespace string, rule *v1alpha1.PostableAlertingRule) error
+	// UpdateCustomAlertingRule updates the custom alerting rule with the given name.
+	UpdateCustomAlertingRule(namespace, ruleName string, rule *v1alpha1.PostableAlertingRule) error
+	// DeleteCustomAlertingRule deletes the custom alerting rule with the given name.
+	DeleteCustomAlertingRule(namespace, ruleName string) error
 
-	CreateAlertingRule(namespace string, rule *v1alpha1.AlertingRule) (string, error)
-	UpdateAlertingRule(namespace string, rule *v1alpha1.AlertingRule) (string, error)
-	DeleteAlertingRule(namespace, ruleId string) error
-
-	ListAlerts(ctx context.Context, namespace string, query *v1alpha1.AlertQuery) (*v1alpha1.AlertList, error)
-	ListAlertsWithRuleId(ctx context.Context, namespace string, ruleId string) ([]*v1alpha1.Alert, error)
+	// ListBuiltinAlertingRules lists the builtin(non-custom) alerting rules
+	ListBuiltinAlertingRules(ctx context.Context,
+		queryParams *v1alpha1.AlertingRuleQueryParams) (*v1alpha1.GettableAlertingRuleList, error)
+	// ListBuiltinRulesAlerts lists the alerts of the builtin(non-custom) alerting rules
+	ListBuiltinRulesAlerts(ctx context.Context,
+		queryParams *v1alpha1.AlertQueryParams) (*v1alpha1.AlertList, error)
+	// GetBuiltinAlertingRule gets the builtin(non-custom) alerting rule with the given id
+	GetBuiltinAlertingRule(ctx context.Context, ruleId string) (*v1alpha1.GettableAlertingRule, error)
+	// ListBuiltinSpecifiedRuleAlerts lists the alerts of the builtin(non-custom) alerting rule with the given id
+	ListBuiltinSpecifiedRuleAlerts(ctx context.Context, ruleId string) ([]*v1alpha1.Alert, error)
 }
 
 func NewOperator(informers informers.InformerFactory,
@@ -56,16 +74,18 @@ func NewOperator(informers informers.InformerFactory,
 	o := operator{
 		namespaceInformer: informers.KubernetesSharedInformerFactory().Core().V1().Namespaces(),
 
-		prometheusResourceClient: promResourceClient,
+		promResourceClient: promResourceClient,
 
-		prometheusInformer:     informers.PrometheusSharedInformerFactory().Monitoring().V1().Prometheuses(),
-		thanosRulerInformer:    informers.PrometheusSharedInformerFactory().Monitoring().V1().ThanosRulers(),
-		prometheusRuleInformer: informers.PrometheusSharedInformerFactory().Monitoring().V1().PrometheusRules(),
+		prometheusInformer:   informers.PrometheusSharedInformerFactory().Monitoring().V1().Prometheuses(),
+		thanosRulerInformer:  informers.PrometheusSharedInformerFactory().Monitoring().V1().ThanosRulers(),
+		ruleResourceInformer: informers.PrometheusSharedInformerFactory().Monitoring().V1().PrometheusRules(),
 
 		ruleClient: ruleClient,
 
 		thanosRuleResourceLabels: make(map[string]string),
 	}
+
+	o.resourceRuleCache = rules.NewRuleCache(o.ruleResourceInformer)
 
 	if option != nil && len(option.ThanosRuleResourceLabels) != 0 {
 		lblStrings := strings.Split(option.ThanosRuleResourceLabels, ",")
@@ -83,414 +103,461 @@ func NewOperator(informers informers.InformerFactory,
 type operator struct {
 	ruleClient customalerting.RuleClient
 
-	prometheusResourceClient promresourcesclient.Interface
+	promResourceClient promresourcesclient.Interface
 
-	prometheusInformer     prominformersv1.PrometheusInformer
-	thanosRulerInformer    prominformersv1.ThanosRulerInformer
-	prometheusRuleInformer prominformersv1.PrometheusRuleInformer
+	prometheusInformer   prominformersv1.PrometheusInformer
+	thanosRulerInformer  prominformersv1.ThanosRulerInformer
+	ruleResourceInformer prominformersv1.PrometheusRuleInformer
 
 	namespaceInformer coreinformersv1.NamespaceInformer
+
+	resourceRuleCache *rules.RuleCache
 
 	thanosRuleResourceLabels map[string]string
 }
 
-func (o *operator) CreateAlertingRule(namespace string, rule *v1alpha1.AlertingRule) (string, error) {
-	var (
-		ruleNamespace *corev1.Namespace
-		level         v1alpha1.RuleLevel
-		id            string
-		err           error
-	)
+func (o *operator) ListCustomAlertingRules(ctx context.Context, namespace string,
+	queryParams *v1alpha1.AlertingRuleQueryParams) (*v1alpha1.GettableAlertingRuleList, error) {
 
+	var level v1alpha1.RuleLevel
 	if namespace == "" {
+		namespace = rulerNamespace
 		level = v1alpha1.RuleLevelCluster
-		ruleNamespace, err = o.namespaceInformer.Lister().Get(rulerNamespace)
-		if err != nil {
-			return "", err
-		}
-
-		if id, err = rules.GenApiRuleId(customAlertingRuleGroupDefault, rule); err != nil {
-			return "", errors.Wrap(err, rules.ErrGenRuleId)
-		}
-		ruler, err := o.getPrometheusRuler()
-		if err != nil {
-			return "", err
-		}
-		if ruler != nil {
-			_, _, resRule, err := ruler.GetAlertingRule(ruleNamespace, id, level)
-			if err != nil {
-				return "", err
-			}
-			if resRule != nil {
-				return "", errors.Errorf("a rule with same config already exists")
-			}
-		}
 	} else {
 		level = v1alpha1.RuleLevelNamespace
-		ruleNamespace, err = o.namespaceInformer.Lister().Get(namespace)
-		if err != nil {
-			return "", err
-		}
-
-		expr, err := rules.InjectExprNamespaceLabel(rule.Query, ruleNamespace.Name)
-		if err != nil {
-			return "", err
-		}
-		rule.Query = expr
-		if id, err = rules.GenApiRuleId(customAlertingRuleGroupDefault, rule); err != nil {
-			return "", errors.Wrap(err, rules.ErrGenRuleId)
-		}
 	}
+
+	ruleNamespace, err := o.namespaceInformer.Lister().Get(namespace)
+	if err != nil {
+		return nil, err
+	}
+
+	alertingRules, err := o.listCustomAlertingRules(ctx, ruleNamespace, level)
+	if err != nil {
+		return nil, err
+	}
+
+	return pageAlertingRules(alertingRules, queryParams), nil
+}
+
+func (o *operator) ListCustomRulesAlerts(ctx context.Context, namespace string,
+	queryParams *v1alpha1.AlertQueryParams) (*v1alpha1.AlertList, error) {
+
+	var level v1alpha1.RuleLevel
+	if namespace == "" {
+		namespace = rulerNamespace
+		level = v1alpha1.RuleLevelCluster
+	} else {
+		level = v1alpha1.RuleLevelNamespace
+	}
+
+	ruleNamespace, err := o.namespaceInformer.Lister().Get(namespace)
+	if err != nil {
+		return nil, err
+	}
+
+	alertingRules, err := o.listCustomAlertingRules(ctx, ruleNamespace, level)
+	if err != nil {
+		return nil, err
+	}
+
+	return pageAlerts(alertingRules, queryParams), nil
+}
+
+func (o *operator) GetCustomAlertingRule(ctx context.Context, namespace, ruleName string) (
+	*v1alpha1.GettableAlertingRule, error) {
+
+	var level v1alpha1.RuleLevel
+	if namespace == "" {
+		namespace = rulerNamespace
+		level = v1alpha1.RuleLevelCluster
+	} else {
+		level = v1alpha1.RuleLevelNamespace
+	}
+
+	ruleNamespace, err := o.namespaceInformer.Lister().Get(namespace)
+	if err != nil {
+		return nil, err
+	}
+
+	return o.getCustomAlertingRule(ctx, ruleNamespace, ruleName, level)
+}
+
+func (o *operator) ListCustomSpecifiedRuleAlerts(ctx context.Context, namespace, ruleName string) (
+	[]*v1alpha1.Alert, error) {
+
+	rule, err := o.GetCustomAlertingRule(ctx, namespace, ruleName)
+	if err != nil {
+		return nil, err
+	}
+	if rule == nil {
+		return nil, v1alpha1.ErrAlertingRuleNotFound
+	}
+	return rule.Alerts, nil
+}
+
+func (o *operator) ListBuiltinAlertingRules(ctx context.Context,
+	queryParams *v1alpha1.AlertingRuleQueryParams) (*v1alpha1.GettableAlertingRuleList, error) {
+
+	alertingRules, err := o.listBuiltinAlertingRules(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return pageAlertingRules(alertingRules, queryParams), nil
+}
+
+func (o *operator) ListBuiltinRulesAlerts(ctx context.Context,
+	queryParams *v1alpha1.AlertQueryParams) (*v1alpha1.AlertList, error) {
+	alertingRules, err := o.listBuiltinAlertingRules(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return pageAlerts(alertingRules, queryParams), nil
+}
+
+func (o *operator) GetBuiltinAlertingRule(ctx context.Context, ruleId string) (
+	*v1alpha1.GettableAlertingRule, error) {
+
+	return o.getBuiltinAlertingRule(ctx, ruleId)
+}
+
+func (o *operator) ListBuiltinSpecifiedRuleAlerts(ctx context.Context, ruleId string) ([]*v1alpha1.Alert, error) {
+	rule, err := o.getBuiltinAlertingRule(ctx, ruleId)
+	if err != nil {
+		return nil, err
+	}
+	if rule == nil {
+		return nil, v1alpha1.ErrAlertingRuleNotFound
+	}
+	return rule.Alerts, nil
+}
+
+func (o *operator) ListClusterAlertingRules(ctx context.Context, customFlag string,
+	queryParams *v1alpha1.AlertingRuleQueryParams) (*v1alpha1.GettableAlertingRuleList, error) {
+
+	namespace := rulerNamespace
+	ruleNamespace, err := o.namespaceInformer.Lister().Get(namespace)
+	if err != nil {
+		return nil, err
+	}
+
+	alertingRules, err := o.listCustomAlertingRules(ctx, ruleNamespace, v1alpha1.RuleLevelCluster)
+	if err != nil {
+		return nil, err
+	}
+
+	return pageAlertingRules(alertingRules, queryParams), nil
+}
+
+func (o *operator) ListClusterRulesAlerts(ctx context.Context,
+	queryParams *v1alpha1.AlertQueryParams) (*v1alpha1.AlertList, error) {
+
+	namespace := rulerNamespace
+	ruleNamespace, err := o.namespaceInformer.Lister().Get(namespace)
+	if err != nil {
+		return nil, err
+	}
+
+	alertingRules, err := o.listCustomAlertingRules(ctx, ruleNamespace, v1alpha1.RuleLevelCluster)
+	if err != nil {
+		return nil, err
+	}
+
+	return pageAlerts(alertingRules, queryParams), nil
+}
+
+func (o *operator) listCustomAlertingRules(ctx context.Context, ruleNamespace *corev1.Namespace,
+	level v1alpha1.RuleLevel) ([]*v1alpha1.GettableAlertingRule, error) {
 
 	ruler, err := o.getThanosRuler()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if ruler == nil {
-		return "", errors.New(errThanosRulerNotEnabled)
+		return nil, v1alpha1.ErrThanosRulerNotEnabled
 	}
-	_, _, resRule, err := ruler.GetAlertingRule(ruleNamespace, id, level)
+
+	resourceRulesMap, err := o.resourceRuleCache.ListRules(ruler, ruleNamespace,
+		labels.SelectorFromSet(labels.Set{customRuleResourceLabelKeyLevel: string(level)}))
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	if resRule != nil {
-		return "", errors.Errorf("a rule with same config already exists")
+
+	ruleGroups, err := o.ruleClient.ThanosRules(ctx)
+	if err != nil {
+		return nil, err
 	}
-	if err = ruler.AddAlertingRule(ruleNamespace, rule, customAlertingRuleGroupDefault, level); err != nil {
-		return "", errors.Wrap(err, "error adding an alerting rule: ")
-	} else {
-		return id, nil
-	}
+
+	return rules.MixAlertingRules(ruleNamespace.Name, &rules.ResourceRuleChunk{
+		ResourceRulesMap: resourceRulesMap,
+		Custom:           true,
+		Level:            level,
+	}, ruleGroups, ruler.ExternalLabels())
 }
 
-func (o *operator) UpdateAlertingRule(namespace string, rule *v1alpha1.AlertingRule) (string, error) {
-	if rule.Id == "" {
-		return "", errors.Errorf("rule id can not be empty when updating a rule")
-	}
-
-	var (
-		ruleNamespace *corev1.Namespace
-		level         v1alpha1.RuleLevel
-		id            = rule.Id
-		err           error
-	)
-
-	if namespace == "" {
-		level = v1alpha1.RuleLevelCluster
-		ruleNamespace, err = o.namespaceInformer.Lister().Get(rulerNamespace)
-		if err != nil {
-			return "", err
-		}
-
-		ruler, err := o.getPrometheusRuler()
-		if err != nil {
-			return "", err
-		}
-		if ruler != nil {
-			_, _, resRule, err := ruler.GetAlertingRule(ruleNamespace, id, level)
-			if err != nil {
-				return "", err
-			}
-			if resRule != nil {
-				return "", errors.Errorf("can not update a non-custom rule")
-			}
-		}
-	} else {
-		level = v1alpha1.RuleLevelNamespace
-		ruleNamespace, err = o.namespaceInformer.Lister().Get(namespace)
-		if err != nil {
-			return "", err
-		}
-
-		expr, err := rules.InjectExprNamespaceLabel(rule.Query, ruleNamespace.Name)
-		if err != nil {
-			return "", err
-		}
-		rule.Query = expr
-	}
+func (o *operator) getCustomAlertingRule(ctx context.Context, ruleNamespace *corev1.Namespace,
+	ruleName string, level v1alpha1.RuleLevel) (*v1alpha1.GettableAlertingRule, error) {
 
 	ruler, err := o.getThanosRuler()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if ruler == nil {
-		return "", errors.New(errThanosRulerNotEnabled)
-	}
-	_, _, resRule, err := ruler.GetAlertingRule(ruleNamespace, id, level)
-	if err != nil {
-		return "", err
-	}
-	if resRule == nil {
-		return "", errors.Errorf("can not find a rule with rule id %s", id)
+		return nil, v1alpha1.ErrThanosRulerNotEnabled
 	}
 
-	if nid, err := ruler.UpdateAlertingRule(ruleNamespace, id, rule, level); err != nil {
-		return "", errors.Wrap(err, "error updating an alerting rule")
-	} else {
-		return nid, nil
+	resourceRule, err := o.resourceRuleCache.GetRule(ruler, ruleNamespace,
+		labels.SelectorFromSet(labels.Set{customRuleResourceLabelKeyLevel: string(level)}), ruleName)
+	if err != nil {
+		return nil, err
 	}
+	if resourceRule == nil {
+		return nil, v1alpha1.ErrAlertingRuleNotFound
+	}
+
+	ruleGroups, err := o.ruleClient.ThanosRules(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return rules.MixAlertingRule(ruleNamespace.Name, &rules.ResourceRuleSole{
+		ResourceRule: *resourceRule,
+		Custom:       true,
+		Level:        level,
+	}, ruleGroups, ruler.ExternalLabels())
 }
 
-func (o *operator) DeleteAlertingRule(namespace, id string) error {
+func (o *operator) listBuiltinAlertingRules(ctx context.Context) (
+	[]*v1alpha1.GettableAlertingRule, error) {
+
+	ruler, err := o.getPrometheusRuler()
+	if err != nil {
+		return nil, err
+	}
+
+	ruleGroups, err := o.ruleClient.PrometheusRules(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if ruler == nil {
+		// for out-cluster prometheus
+		return rules.ParseAlertingRules(ruleGroups, false, v1alpha1.RuleLevelCluster,
+			func(group, id string, rule *customalerting.AlertingRule) bool {
+				return true
+			})
+	}
+
+	namespace := rulerNamespace
+	ruleNamespace, err := o.namespaceInformer.Lister().Get(namespace)
+	if err != nil {
+		return nil, err
+	}
+
+	resourceRulesMap, err := o.resourceRuleCache.ListRules(ruler, ruleNamespace, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return rules.MixAlertingRules(ruleNamespace.Name, &rules.ResourceRuleChunk{
+		ResourceRulesMap: resourceRulesMap,
+		Custom:           false,
+		Level:            v1alpha1.RuleLevelCluster,
+	}, ruleGroups, ruler.ExternalLabels())
+}
+
+func (o *operator) getBuiltinAlertingRule(ctx context.Context, ruleId string) (*v1alpha1.GettableAlertingRule, error) {
+
+	ruler, err := o.getPrometheusRuler()
+	if err != nil {
+		return nil, err
+	}
+
+	ruleGroups, err := o.ruleClient.PrometheusRules(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if ruler == nil {
+		// for out-cluster prometheus
+		alertingRules, err := rules.ParseAlertingRules(ruleGroups, false, v1alpha1.RuleLevelCluster,
+			func(group, id string, rule *customalerting.AlertingRule) bool {
+				return ruleId == id
+			})
+		if err != nil {
+			return nil, err
+		}
+		if len(alertingRules) == 0 {
+			return nil, v1alpha1.ErrAlertingRuleNotFound
+		}
+		sort.Slice(alertingRules, func(i, j int) bool {
+			return v1alpha1.AlertingRuleIdCompare(alertingRules[i].Id, alertingRules[j].Id)
+		})
+		return alertingRules[0], nil
+	}
+
+	namespace := rulerNamespace
+	ruleNamespace, err := o.namespaceInformer.Lister().Get(namespace)
+	if err != nil {
+		return nil, err
+	}
+
+	resourceRule, err := o.resourceRuleCache.GetRule(ruler, ruleNamespace, nil, ruleId)
+	if err != nil {
+		return nil, err
+	}
+
+	if resourceRule == nil {
+		return nil, v1alpha1.ErrAlertingRuleNotFound
+	}
+
+	return rules.MixAlertingRule(ruleNamespace.Name, &rules.ResourceRuleSole{
+		ResourceRule: *resourceRule,
+		Custom:       false,
+		Level:        v1alpha1.RuleLevelCluster,
+	}, ruleGroups, ruler.ExternalLabels())
+}
+
+func (o *operator) CreateCustomAlertingRule(namespace string, rule *v1alpha1.PostableAlertingRule) error {
+	ruler, err := o.getThanosRuler()
+	if err != nil {
+		return err
+	}
+	if ruler == nil {
+		return v1alpha1.ErrThanosRulerNotEnabled
+	}
+
 	var (
-		ruleNamespace *corev1.Namespace
-		level         v1alpha1.RuleLevel
-		err           error
+		level              v1alpha1.RuleLevel
+		ruleResourceLabels = make(map[string]string)
 	)
-
+	for k, v := range o.thanosRuleResourceLabels {
+		ruleResourceLabels[k] = v
+	}
 	if namespace == "" {
+		namespace = rulerNamespace
 		level = v1alpha1.RuleLevelCluster
-		ruleNamespace, err = o.namespaceInformer.Lister().Get(rulerNamespace)
-		if err != nil {
-			return err
-		}
-
-		ruler, err := o.getPrometheusRuler()
-		if err != nil {
-			return err
-		}
-		if ruler != nil {
-			_, _, resRule, err := ruler.GetAlertingRule(ruleNamespace, id, level)
-			if err != nil {
-				return err
-			}
-			if resRule != nil {
-				return errors.Errorf("can not delete a non-custom rule")
-			}
-		}
 	} else {
 		level = v1alpha1.RuleLevelNamespace
-		ruleNamespace, err = o.namespaceInformer.Lister().Get(namespace)
+		expr, err := rules.InjectExprNamespaceLabel(rule.Query, namespace)
 		if err != nil {
 			return err
 		}
+		rule.Query = expr
 	}
+	ruleResourceLabels[customRuleResourceLabelKeyLevel] = string(level)
+
+	ruleNamespace, err := o.namespaceInformer.Lister().Get(namespace)
+	if err != nil {
+		return err
+	}
+
+	extraRuleResourceSelector := labels.SelectorFromSet(labels.Set{customRuleResourceLabelKeyLevel: string(level)})
+	resourceRule, err := o.resourceRuleCache.GetRule(ruler, ruleNamespace, extraRuleResourceSelector, rule.Name)
+	if err != nil {
+		return err
+	}
+	if resourceRule != nil {
+		return v1alpha1.ErrAlertingRuleAlreadyExists
+	}
+
+	return ruler.AddAlertingRule(ruleNamespace, extraRuleResourceSelector,
+		customRuleGroupDefault, parseToPrometheusRule(rule), ruleResourceLabels)
+}
+
+func (o *operator) UpdateCustomAlertingRule(namespace, name string, rule *v1alpha1.PostableAlertingRule) error {
+
+	rule.Name = name
 
 	ruler, err := o.getThanosRuler()
 	if err != nil {
 		return err
 	}
 	if ruler == nil {
-		return errors.New(errThanosRulerNotEnabled)
-	}
-	if _, err := ruler.DeleteAlertingRule(ruleNamespace, id, level); err != nil {
-		return errors.Wrap(err, "error deleting an alerting rule")
+		return v1alpha1.ErrThanosRulerNotEnabled
 	}
 
-	return nil
-}
-
-func (o *operator) GetAlertingRule(ctx context.Context, namespace, id string) (*v1alpha1.AlertingRule, error) {
 	var (
-		ruleNamespace *corev1.Namespace
-		level         v1alpha1.RuleLevel
-		err           error
+		level              v1alpha1.RuleLevel
+		ruleResourceLabels = make(map[string]string)
 	)
-
+	for k, v := range o.thanosRuleResourceLabels {
+		ruleResourceLabels[k] = v
+	}
 	if namespace == "" {
+		namespace = rulerNamespace
 		level = v1alpha1.RuleLevelCluster
-		ruleNamespace, err = o.namespaceInformer.Lister().Get(rulerNamespace)
-		if err != nil {
-			return nil, err
-		}
-
-		ruler, err := o.getPrometheusRuler()
-		if err != nil {
-			return nil, err
-		}
-		if ruler == nil {
-			cliRuleGroups, err := o.ruleClient.PrometheusRules(ctx)
-			if err != nil {
-				return nil, err
-			}
-			cliRule, err := rules.FindCliRule(cliRuleGroups, id, nil)
-			if err != nil {
-				return nil, err
-			}
-			if cliRule != nil {
-				return rules.MixAlertingRule(id, nil, cliRule, false, level), nil
-			}
-		} else {
-			_, _, resRule, err := ruler.GetAlertingRule(ruleNamespace, id, level)
-			if err != nil {
-				return nil, err
-			}
-			if resRule != nil {
-				cliRuleGroups, err := o.ruleClient.PrometheusRules(ctx)
-				if err != nil {
-					return nil, err
-				}
-				cliRule, err := rules.FindCliRule(cliRuleGroups, id, ruler.ExternalLabels())
-				if err != nil {
-					return nil, err
-				}
-				return rules.MixAlertingRule(id, resRule, cliRule, false, level), nil
-			}
-		}
 	} else {
 		level = v1alpha1.RuleLevelNamespace
-		ruleNamespace, err = o.namespaceInformer.Lister().Get(namespace)
+		expr, err := rules.InjectExprNamespaceLabel(rule.Query, namespace)
 		if err != nil {
-			return nil, err
+			return err
 		}
+		rule.Query = expr
+	}
+	ruleResourceLabels[customRuleResourceLabelKeyLevel] = string(level)
+
+	ruleNamespace, err := o.namespaceInformer.Lister().Get(namespace)
+	if err != nil {
+		return err
 	}
 
+	extraRuleResourceSelector := labels.SelectorFromSet(labels.Set{customRuleResourceLabelKeyLevel: string(level)})
+	resourceRule, err := o.resourceRuleCache.GetRule(ruler, ruleNamespace, extraRuleResourceSelector, rule.Name)
+	if err != nil {
+		return err
+	}
+	if resourceRule == nil {
+		return v1alpha1.ErrAlertingRuleNotFound
+	}
+
+	return ruler.UpdateAlertingRule(ruleNamespace, extraRuleResourceSelector,
+		resourceRule.Group, parseToPrometheusRule(rule), ruleResourceLabels)
+}
+
+func (o *operator) DeleteCustomAlertingRule(namespace, name string) error {
 	ruler, err := o.getThanosRuler()
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if ruler == nil {
-		return nil, errors.Errorf("can not find a rule with rule id %s", id)
+		return v1alpha1.ErrThanosRulerNotEnabled
 	}
 
-	_, _, resRule, err := ruler.GetAlertingRule(ruleNamespace, id, level)
-	if err != nil {
-		return nil, err
-	}
-	if resRule == nil {
-		return nil, errors.Errorf("can not find a rule with rule id %s", id)
-	}
-	cliRuleGroups, err := o.ruleClient.ThanosRules(ctx)
-	if err != nil {
-		return nil, err
-	}
-	cliRule, err := rules.FindCliRule(cliRuleGroups, id, ruler.ExternalLabels())
-	if err != nil {
-		return nil, err
-	}
-	return rules.MixAlertingRule(id, resRule, cliRule, true, level), nil
-}
-
-func (o *operator) ListAlertingRules(ctx context.Context, namespace string, query *v1alpha1.AlertingRuleQuery) (
-	*v1alpha1.AlertingRuleList, error) {
-	alertingRules, err := o.listAlertingRules(ctx, namespace)
-	if err != nil {
-		return nil, errors.Wrap(err, "")
-	}
-
-	alertingRules = query.Filter(alertingRules)
-	query.Sort(alertingRules)
-
-	return &v1alpha1.AlertingRuleList{
-		Total: len(alertingRules),
-		Items: query.Sub(alertingRules),
-	}, nil
-}
-
-func (o *operator) listAlertingRules(ctx context.Context, namespace string) ([]*v1alpha1.AlertingRule, error) {
 	var (
-		ruleNamespace *corev1.Namespace
-		level         v1alpha1.RuleLevel
-		err           error
-
-		// rules from prometheusrule resources
-		promRuleResources, thanosRuleResources []*promresourcesv1.PrometheusRule
-		// rules from prometheus or thanos ruler endpoints
-		promCliRuleGroups, thanosCliRuleGroups []*customalerting.RuleGroup
-		// rules from endpoints may contain some external labels and will be removed when generating rule id.
-		promRulerExtLabels, thanosRulerExtLabels func() map[string]string
-		// indicates the presence of prometheus custom resource or thanosruler custom resource.
-		hasPromRuler, hasThanosRuler bool
+		level v1alpha1.RuleLevel
 	)
-
 	if namespace == "" {
+		namespace = rulerNamespace
 		level = v1alpha1.RuleLevelCluster
-		ruleNamespace, err = o.namespaceInformer.Lister().Get(rulerNamespace)
-		if err != nil {
-			return nil, err
-		}
-
-		ruler, err := o.getPrometheusRuler()
-		if err != nil {
-			return nil, err
-		}
-		promCliRuleGroups, err = o.ruleClient.PrometheusRules(ctx)
-		if err != nil {
-			return nil, err
-		}
-		if ruler != nil {
-			hasPromRuler = true
-			promRulerExtLabels = ruler.ExternalLabels()
-			promRuleResources, err = ruler.ListRuleResources(ruleNamespace, level)
-			if err != nil {
-				return nil, err
-			}
-		}
 	} else {
 		level = v1alpha1.RuleLevelNamespace
-		ruleNamespace, err = o.namespaceInformer.Lister().Get(namespace)
-		if err != nil {
-			return nil, err
-		}
 	}
 
-	ruler, err := o.getThanosRuler()
+	ruleNamespace, err := o.namespaceInformer.Lister().Get(namespace)
 	if err != nil {
-		return nil, err
-	}
-	if ruler != nil {
-		hasThanosRuler = true
-		thanosRulerExtLabels = ruler.ExternalLabels()
-		thanosRuleResources, err = ruler.ListRuleResources(ruleNamespace, level)
-		if err != nil {
-			return nil, err
-		}
-		thanosCliRuleGroups, err = o.ruleClient.ThanosRules(ctx)
-		if err != nil {
-			return nil, err
-		}
+		return err
 	}
 
-	return rules.MixAlertingRules(
-		ruleNamespace.Name,
-		promRuleResources,
-		thanosRuleResources,
-		promCliRuleGroups,
-		thanosCliRuleGroups,
-		level,
-		hasPromRuler,
-		hasThanosRuler,
-		promRulerExtLabels,
-		thanosRulerExtLabels)
-}
-
-func (o *operator) ListAlerts(ctx context.Context, namespace string, query *v1alpha1.AlertQuery) (*v1alpha1.AlertList, error) {
-	alertingRules, err := o.listAlertingRules(ctx, namespace)
+	extraRuleResourceSelector := labels.SelectorFromSet(labels.Set{customRuleResourceLabelKeyLevel: string(level)})
+	resourceRule, err := o.resourceRuleCache.GetRule(ruler, ruleNamespace, extraRuleResourceSelector, name)
 	if err != nil {
-		return nil, errors.Wrap(err, "")
+		return err
+	}
+	if resourceRule == nil {
+		return v1alpha1.ErrAlertingRuleNotFound
 	}
 
-	var alerts []*v1alpha1.Alert
-	for _, rule := range alertingRules {
-		alerts = append(alerts, query.Filter(rule.Alerts)...)
-	}
-	query.Sort(alerts)
-
-	return &v1alpha1.AlertList{
-		Total: len(alerts),
-		Items: query.Sub(alerts),
-	}, nil
-}
-
-func (o *operator) ListAlertsWithRuleId(ctx context.Context, namespace string, ruleId string) ([]*v1alpha1.Alert, error) {
-	rule, err := o.GetAlertingRule(ctx, namespace, ruleId)
-	if err != nil {
-		return nil, errors.Wrap(err, "")
-	}
-	if rule != nil {
-		alerts := rule.Alerts
-		var alertQuery v1alpha1.AlertQuery
-		alertQuery.Sort(alerts) // Just call its sort method
-		return alerts, nil
-	}
-	return nil, nil
+	return ruler.DeleteAlertingRule(ruleNamespace, extraRuleResourceSelector, resourceRule.Group, name)
 }
 
 // getPrometheusRuler gets the cluster-in prometheus
-func (o *operator) getPrometheusRuler() (*rules.PrometheusRuler, error) {
+func (o *operator) getPrometheusRuler() (rules.Ruler, error) {
 	prometheuses, err := o.prometheusInformer.Lister().Prometheuses(rulerNamespace).List(labels.Everything())
 	if err != nil {
-		return nil, errors.Wrap(err, "error listing prometheuses: ")
+		return nil, errors.Wrap(err, "error listing prometheuses")
 	}
 	if len(prometheuses) > 1 {
 		// it is not supported temporarily to have multiple prometheuses in the monitoring namespace
@@ -501,10 +568,10 @@ func (o *operator) getPrometheusRuler() (*rules.PrometheusRuler, error) {
 		return nil, nil
 	}
 
-	return rules.NewPrometheusRuler(prometheuses[0], o.prometheusRuleInformer, o.prometheusResourceClient), nil
+	return rules.NewPrometheusRuler(prometheuses[0], o.ruleResourceInformer, o.promResourceClient), nil
 }
 
-func (o *operator) getThanosRuler() (*rules.ThanosRuler, error) {
+func (o *operator) getThanosRuler() (rules.Ruler, error) {
 	thanosrulers, err := o.thanosRulerInformer.Lister().ThanosRulers(rulerNamespace).List(labels.Everything())
 	if err != nil {
 		return nil, errors.Wrap(err, "error listing thanosrulers: ")
@@ -519,6 +586,45 @@ func (o *operator) getThanosRuler() (*rules.ThanosRuler, error) {
 		return nil, nil
 	}
 
-	return rules.NewThanosRuler(thanosrulers[0], o.prometheusRuleInformer,
-		o.prometheusResourceClient, o.thanosRuleResourceLabels), nil
+	return rules.NewThanosRuler(thanosrulers[0], o.ruleResourceInformer, o.promResourceClient), nil
+}
+
+func parseToPrometheusRule(rule *v1alpha1.PostableAlertingRule) *promresourcesv1.Rule {
+	lbls := rule.Labels
+	lbls[rules.LabelKeyInternalRuleAlias] = rule.Alias
+	lbls[rules.LabelKeyInternalRuleDescription] = rule.Description
+	return &promresourcesv1.Rule{
+		Alert:       rule.Name,
+		Expr:        intstr.FromString(rule.Query),
+		For:         rule.Duration,
+		Labels:      lbls,
+		Annotations: rule.Annotations,
+	}
+}
+
+func pageAlertingRules(alertingRules []*v1alpha1.GettableAlertingRule,
+	queryParams *v1alpha1.AlertingRuleQueryParams) *v1alpha1.GettableAlertingRuleList {
+
+	alertingRules = queryParams.Filter(alertingRules)
+	queryParams.Sort(alertingRules)
+
+	return &v1alpha1.GettableAlertingRuleList{
+		Total: len(alertingRules),
+		Items: queryParams.Sub(alertingRules),
+	}
+}
+
+func pageAlerts(alertingRules []*v1alpha1.GettableAlertingRule,
+	queryParams *v1alpha1.AlertQueryParams) *v1alpha1.AlertList {
+
+	var alerts []*v1alpha1.Alert
+	for _, rule := range alertingRules {
+		alerts = append(alerts, queryParams.Filter(rule.Alerts)...)
+	}
+	queryParams.Sort(alerts)
+
+	return &v1alpha1.AlertList{
+		Total: len(alerts),
+		Items: queryParams.Sub(alerts),
+	}
 }

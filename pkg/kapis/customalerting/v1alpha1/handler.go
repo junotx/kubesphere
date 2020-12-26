@@ -40,68 +40,100 @@ func newHandler(informers informers.InformerFactory,
 	}
 }
 
-func (h *handler) handleListAlertingRules(req *restful.Request, resp *restful.Response) {
-	ruleNamespace := req.PathParameter("namespace")
-	query, err := v1alpha1.ParseAlertingRuleQueryParameter(req)
+func (h *handler) handleListCustomAlertingRules(req *restful.Request, resp *restful.Response) {
+	namespace := req.PathParameter("namespace")
+	query, err := v1alpha1.ParseAlertingRuleQueryParams(req)
 	if err != nil {
 		klog.Error(err)
 		ksapi.HandleBadRequest(resp, nil, err)
 		return
 	}
-	rules, err := h.operator.ListAlertingRules(req.Request.Context(), ruleNamespace, query)
+
+	rules, err := h.operator.ListCustomAlertingRules(req.Request.Context(), namespace, query)
 	if err != nil {
 		klog.Error(err)
-		ksapi.HandleBadRequest(resp, nil, err)
+		switch {
+		case err == v1alpha1.ErrThanosRulerNotEnabled:
+			ksapi.HandleBadRequest(resp, nil, err)
+		default:
+			ksapi.HandleInternalError(resp, nil, err)
+		}
 		return
 	}
 	resp.WriteEntity(rules)
 }
 
-func (h *handler) handleGetAlertingRules(req *restful.Request, resp *restful.Response) {
-	ruleNamespace := req.PathParameter("namespace")
-	ruleId := req.PathParameter("ruleId")
-	rule, err := h.operator.GetAlertingRule(req.Request.Context(), ruleNamespace, ruleId)
+func (h *handler) handleListCustomRulesAlerts(req *restful.Request, resp *restful.Response) {
+	namespace := req.PathParameter("namespace")
+	query, err := v1alpha1.ParseAlertQueryParams(req)
 	if err != nil {
 		klog.Error(err)
 		ksapi.HandleBadRequest(resp, nil, err)
+		return
+	}
+
+	alerts, err := h.operator.ListCustomRulesAlerts(req.Request.Context(), namespace, query)
+	if err != nil {
+		klog.Error(err)
+		switch {
+		case err == v1alpha1.ErrThanosRulerNotEnabled:
+			ksapi.HandleBadRequest(resp, nil, err)
+		default:
+			ksapi.HandleInternalError(resp, nil, err)
+		}
+		return
+	}
+	resp.WriteEntity(alerts)
+}
+
+func (h *handler) handleGetCustomAlertingRule(req *restful.Request, resp *restful.Response) {
+	namespace := req.PathParameter("namespace")
+	ruleName := req.PathParameter("rule_name")
+
+	rule, err := h.operator.GetCustomAlertingRule(req.Request.Context(), namespace, ruleName)
+	if err != nil {
+		klog.Error(err)
+		switch {
+		case err == v1alpha1.ErrThanosRulerNotEnabled:
+			ksapi.HandleBadRequest(resp, nil, err)
+		case err == v1alpha1.ErrAlertingRuleNotFound:
+			ksapi.HandleNotFound(resp, nil, err)
+		default:
+			ksapi.HandleInternalError(resp, nil, err)
+		}
+		return
+	}
+	if rule == nil {
+		ksapi.HandleNotFound(resp, nil, err)
 		return
 	}
 	resp.WriteEntity(rule)
 }
 
-func (h *handler) handleListAlerts(req *restful.Request, resp *restful.Response) {
-	ruleNamespace := req.PathParameter("namespace")
-	query, err := v1alpha1.ParseAlertQueryParameter(req)
-	if err != nil {
-		klog.Error(err)
-		ksapi.HandleBadRequest(resp, nil, err)
-		return
-	}
-	alerts, err := h.operator.ListAlerts(req.Request.Context(), ruleNamespace, query)
-	if err != nil {
-		klog.Error(err)
-		ksapi.HandleBadRequest(resp, nil, err)
-		return
-	}
-	resp.WriteEntity(alerts)
-}
+func (h *handler) handleListCustomSpecifiedRuleAlerts(req *restful.Request, resp *restful.Response) {
+	namespace := req.PathParameter("namespace")
+	ruleName := req.PathParameter("rule_name")
 
-func (h *handler) handleListAlertsWithRuleId(req *restful.Request, resp *restful.Response) {
-	ruleNamespace := req.PathParameter("namespace")
-	ruleId := req.PathParameter("ruleId")
-	alerts, err := h.operator.ListAlertsWithRuleId(req.Request.Context(), ruleNamespace, ruleId)
+	alerts, err := h.operator.ListCustomSpecifiedRuleAlerts(req.Request.Context(), namespace, ruleName)
 	if err != nil {
 		klog.Error(err)
-		ksapi.HandleBadRequest(resp, nil, err)
+		switch {
+		case err == v1alpha1.ErrThanosRulerNotEnabled:
+			ksapi.HandleBadRequest(resp, nil, err)
+		case err == v1alpha1.ErrAlertingRuleNotFound:
+			ksapi.HandleNotFound(resp, nil, err)
+		default:
+			ksapi.HandleInternalError(resp, nil, err)
+		}
 		return
 	}
 	resp.WriteEntity(alerts)
 }
 
-func (h *handler) handleCreateAlertingRule(req *restful.Request, resp *restful.Response) {
-	ruleNamespace := req.PathParameter("namespace")
+func (h *handler) handleCreateCustomAlertingRule(req *restful.Request, resp *restful.Response) {
+	namespace := req.PathParameter("namespace")
 
-	var rule v1alpha1.AlertingRule
+	var rule v1alpha1.PostableAlertingRule
 	if err := req.ReadEntity(&rule); err != nil {
 		klog.Error(err)
 		ksapi.HandleBadRequest(resp, nil, err)
@@ -113,20 +145,26 @@ func (h *handler) handleCreateAlertingRule(req *restful.Request, resp *restful.R
 		return
 	}
 
-	id, err := h.operator.CreateAlertingRule(ruleNamespace, &rule)
+	err := h.operator.CreateCustomAlertingRule(namespace, &rule)
 	if err != nil {
 		klog.Error(err)
-		ksapi.HandleBadRequest(resp, nil, err)
+		switch {
+		case err == v1alpha1.ErrThanosRulerNotEnabled:
+			ksapi.HandleBadRequest(resp, nil, err)
+		case err == v1alpha1.ErrAlertingRuleAlreadyExists:
+			ksapi.HandleConflict(resp, nil, err)
+		default:
+			ksapi.HandleInternalError(resp, nil, err)
+		}
 		return
 	}
-	resp.WriteEntity(id)
 }
 
-func (h *handler) handleUpdateAlertingRule(req *restful.Request, resp *restful.Response) {
-	ruleNamespace := req.PathParameter("namespace")
-	ruleId := req.PathParameter("ruleId")
+func (h *handler) handleUpdateCustomAlertingRule(req *restful.Request, resp *restful.Response) {
+	namespace := req.PathParameter("namespace")
+	ruleName := req.PathParameter("rule_name")
 
-	var rule v1alpha1.AlertingRule
+	var rule v1alpha1.PostableAlertingRule
 	if err := req.ReadEntity(&rule); err != nil {
 		klog.Error(err)
 		ksapi.HandleBadRequest(resp, nil, err)
@@ -138,26 +176,110 @@ func (h *handler) handleUpdateAlertingRule(req *restful.Request, resp *restful.R
 		return
 	}
 
-	rule.Id = ruleId
-
-	newId, err := h.operator.UpdateAlertingRule(ruleNamespace, &rule)
+	err := h.operator.UpdateCustomAlertingRule(namespace, ruleName, &rule)
 	if err != nil {
 		klog.Error(err)
-		ksapi.HandleBadRequest(resp, nil, err)
+		switch {
+		case err == v1alpha1.ErrThanosRulerNotEnabled:
+			ksapi.HandleBadRequest(resp, nil, err)
+		case err == v1alpha1.ErrAlertingRuleNotFound:
+			ksapi.HandleNotFound(resp, nil, err)
+		default:
+			ksapi.HandleInternalError(resp, nil, err)
+		}
 		return
 	}
-	resp.WriteEntity(newId)
 }
 
-func (h *handler) handleDeleteAlertingRule(req *restful.Request, resp *restful.Response) {
-	ruleNamespace := req.PathParameter("namespace")
-	ruleId := req.PathParameter("ruleId")
+func (h *handler) handleDeleteCustomAlertingRule(req *restful.Request, resp *restful.Response) {
+	namespace := req.PathParameter("namespace")
+	name := req.PathParameter("rule_name")
 
-	err := h.operator.DeleteAlertingRule(ruleNamespace, ruleId)
+	err := h.operator.DeleteCustomAlertingRule(namespace, name)
+	if err != nil {
+		klog.Error(err)
+		switch {
+		case err == v1alpha1.ErrThanosRulerNotEnabled:
+			ksapi.HandleBadRequest(resp, nil, err)
+		case err == v1alpha1.ErrAlertingRuleNotFound:
+			ksapi.HandleNotFound(resp, nil, err)
+		default:
+			ksapi.HandleInternalError(resp, nil, err)
+		}
+		return
+	}
+}
+
+func (h *handler) handleListBuiltinAlertingRules(req *restful.Request, resp *restful.Response) {
+	query, err := v1alpha1.ParseAlertingRuleQueryParams(req)
 	if err != nil {
 		klog.Error(err)
 		ksapi.HandleBadRequest(resp, nil, err)
 		return
 	}
-	resp.WriteEntity(nil)
+
+	rules, err := h.operator.ListBuiltinAlertingRules(req.Request.Context(), query)
+	if err != nil {
+		klog.Error(err)
+		ksapi.HandleInternalError(resp, nil, err)
+		return
+	}
+	resp.WriteEntity(rules)
+}
+
+func (h *handler) handleListBuiltinRulesAlerts(req *restful.Request, resp *restful.Response) {
+	query, err := v1alpha1.ParseAlertQueryParams(req)
+	if err != nil {
+		klog.Error(err)
+		ksapi.HandleBadRequest(resp, nil, err)
+		return
+	}
+
+	alerts, err := h.operator.ListBuiltinRulesAlerts(req.Request.Context(), query)
+	if err != nil {
+		klog.Error(err)
+		ksapi.HandleInternalError(resp, nil, err)
+		return
+	}
+	resp.WriteEntity(alerts)
+}
+
+func (h *handler) handleGetBuiltinAlertingRule(req *restful.Request, resp *restful.Response) {
+	ruleId := req.PathParameter("rule_id")
+
+	rule, err := h.operator.GetBuiltinAlertingRule(req.Request.Context(), ruleId)
+	if err != nil {
+		klog.Error(err)
+		switch {
+		case err == v1alpha1.ErrAlertingRuleNotFound:
+			ksapi.HandleNotFound(resp, nil, err)
+		default:
+			ksapi.HandleInternalError(resp, nil, err)
+		}
+		return
+	}
+	if rule == nil {
+		ksapi.HandleNotFound(resp, nil, err)
+		return
+	}
+
+	resp.WriteEntity(rule)
+}
+
+func (h *handler) handleListBuiltinSpecifiedRuleAlerts(req *restful.Request, resp *restful.Response) {
+	ruleId := req.PathParameter("rule_id")
+
+	alerts, err := h.operator.ListBuiltinSpecifiedRuleAlerts(req.Request.Context(), ruleId)
+	if err != nil {
+		klog.Error(err)
+		switch {
+		case err == v1alpha1.ErrAlertingRuleNotFound:
+			ksapi.HandleNotFound(resp, nil, err)
+		default:
+			ksapi.HandleInternalError(resp, nil, err)
+		}
+		return
+	}
+
+	resp.WriteEntity(alerts)
 }

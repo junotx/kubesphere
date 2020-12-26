@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -29,35 +30,44 @@ import (
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 )
 
-type RuleLevel string
-
 const (
 	RuleLevelCluster   RuleLevel = "cluster"
 	RuleLevelNamespace RuleLevel = "namespace"
 )
 
-type AlertingRule struct {
-	Id string `json:"id,omitempty" description:"rule id which is unique in its namespace"`
+var (
+	ErrThanosRulerNotEnabled     = errors.New("The request operation to custom alerting rule could not be done because thanos ruler is not enabled")
+	ErrAlertingRuleNotFound      = errors.New("The alerting rule was not found")
+	ErrAlertingRuleAlreadyExists = errors.New("The alerting rule already exists")
 
-	Name        string            `json:"name,omitempty" description:"rule name which can be duplicate in different rule"`
-	Query       string            `json:"query,omitempty" description:"prometheus query expression, grammars of which may be referred to https://prometheus.io/docs/prometheus/latest/querying/basics/"`
-	Duration    string            `json:"duration,omitempty" description:"duration an alert transitions from Pending to Firing state, which must match ^([0-9]+)(y|w|d|h|m|s|ms)$"`
-	Labels      map[string]string `json:"labels,omitempty" description:"extra labels to attach to the resulting alert sample vectors (the key string has to match [a-zA-Z_][a-zA-Z0-9_]*). eg: a typical label called severity, whose value may be info, warning, error, critical, etc., is usually used to indicate the severity of an alert"`
-	Annotations map[string]string `json:"annotations,omitempty" description:"non-identifying key/value pairs. summary, message, description are the commonly used annotation names"`
+	ruleLabelNameMatcher = regexp.MustCompile(`[a-zA-Z_][a-zA-Z0-9_]*`)
+)
 
-	State                     string     `json:"state,omitempty" description:"state of a rule based on its alerts, one of firing, pending, inactive"`
-	Health                    string     `json:"health,omitempty" description:"health state of a rule based on the last execution, one of ok, err, unknown"`
-	LastError                 string     `json:"lastError,omitempty" description:"error for the last execution"`
-	EvaluationDurationSeconds float64    `json:"evaluationTime,omitempty" description:"taken seconds for evaluation of query expression"`
-	LastEvaluation            *time.Time `json:"lastEvaluation,omitempty" description:"time for last evaluation of query expression"`
+type RuleLevel string
 
-	Alerts []*Alert `json:"alerts,omitempty" description:"alerts"`
-
-	Level  RuleLevel `json:"level,omitempty" description:"rule level, one of cluster, namespace"`
-	Custom bool      `json:"custom" description:"whether to be a custom rule. Non-custom rules can only be viewed"`
+type AlertingRuleQualifier struct {
+	Id     string    `json:"id,omitempty" description:"rule id is mainly for the builtin rules"`
+	Name   string    `json:"name,omitempty" description:"rule name which should be uniq for custom rules in the specified namespace"`
+	Level  RuleLevel `json:"level,omitempty" description:"rule level is only for the custom rules and its value is one of cluster, namespace"`
+	Custom bool      `json:"custom" description:"whether to be a custom rule. The builtin rules are not custom and can only be viewed"`
 }
 
-func (r *AlertingRule) Validate() error {
+type AlertingRuleProps struct {
+	Query       string            `json:"query,omitempty" description:"prometheus query expression, grammars of which may be referred to https://prometheus.io/docs/prometheus/latest/querying/basics/"`
+	Duration    string            `json:"duration,omitempty" description:"duration an alert transitions from Pending to Firing state, which must match ^([0-9]+)(y|w|d|h|m|s|ms)$"`
+	Labels      map[string]string `json:"labels,omitempty" description:"extra labels to attach to the resulting alert sample vectors (the key string has to match [a-zA-Z_][a-zA-Z0-9_]*). eg: a typical label called severity, whose value may be info, warning, error, critical, is usually used to indicate the severity of an alert"`
+	Annotations map[string]string `json:"annotations,omitempty" description:"non-identifying key/value pairs. summary, message, description are the commonly used annotation names"`
+}
+
+type PostableAlertingRule struct {
+	Name        string `json:"name,omitempty" description:"rule name which should be uniq for custom rules in the specified namespace"`
+	Alias       string `json:"alias,omitempty" description:"alias for the rule"`
+	Description string `json:"description,omitempty" description:"description for the rule"`
+
+	AlertingRuleProps `json:",omitempty"`
+}
+
+func (r *PostableAlertingRule) Validate() error {
 	errs := []error{}
 
 	if r.Name == "" {
@@ -72,12 +82,36 @@ func (r *AlertingRule) Validate() error {
 		}
 	}
 
+	if len(r.Labels) > 0 {
+		for name, _ := range r.Labels {
+			if !ruleLabelNameMatcher.MatchString(name) || strings.HasPrefix(name, "__") {
+				errs = append(errs, errors.Errorf(
+					"label name (%s) is not valid. The name must match [a-zA-Z_][a-zA-Z0-9_]* and has not the __ prefix (label names with this prefix are for internal use)", name))
+			}
+		}
+	}
+
 	return utilerrors.NewAggregate(errs)
 }
 
-type AlertingRuleList struct {
-	Items []*AlertingRule `json:"items"`
-	Total int             `json:"total"`
+type GettableAlertingRule struct {
+	AlertingRuleQualifier `json:",omitempty"`
+	AlertingRuleProps     `json:",omitempty"`
+
+	Alias       string `json:"alias,omitempty" description:"alias for the rule"`
+	Description string `json:"description,omitempty" description:"description for the rule"`
+
+	State                     string     `json:"state,omitempty" description:"state of a rule based on its alerts, one of firing, pending, inactive"`
+	Health                    string     `json:"health,omitempty" description:"health state of a rule based on the last execution, one of ok, err, unknown"`
+	LastError                 string     `json:"lastError,omitempty" description:"error for the last execution"`
+	EvaluationDurationSeconds float64    `json:"evaluationTime,omitempty" description:"taken seconds for evaluation of query expression"`
+	LastEvaluation            *time.Time `json:"lastEvaluation,omitempty" description:"time for last evaluation of query expression"`
+	Alerts                    []*Alert   `json:"alerts,omitempty" description:"alerts"`
+}
+
+type GettableAlertingRuleList struct {
+	Items []*GettableAlertingRule `json:"items"`
+	Total int                     `json:"total"`
 }
 
 type Alert struct {
@@ -87,8 +121,7 @@ type Alert struct {
 	State       string            `json:"state,omitempty" description:"state"`
 	Value       string            `json:"value,omitempty" description:"the value at the last evaluation of the query expression"`
 
-	RuleId    string    `json:"ruleId,omitempty" description:"id of rule triggering this alert"`
-	RuleLevel RuleLevel `json:"ruleLevel,omitempty" description:"level of rule triggering this alert"`
+	Rule *AlertingRuleQualifier `json:"rule,omitempty" description:"rule triggering the alert"`
 }
 
 type AlertList struct {
@@ -96,20 +129,21 @@ type AlertList struct {
 	Total int      `json:"total"`
 }
 
-type AlertingRuleQuery struct {
-	Name                string
+type AlertingRuleQueryParams struct {
+	NameContainFilter   string
 	State               string
 	Health              string
 	LabelEqualFilters   map[string]string
 	LabelContainFilters map[string]string
-	Offset              int
-	Limit               int
-	SortField           string
-	SortType            string
+
+	Offset    int
+	Limit     int
+	SortField string
+	SortType  string
 }
 
-func (q *AlertingRuleQuery) Filter(rules []*AlertingRule) []*AlertingRule {
-	var ret []*AlertingRule
+func (q *AlertingRuleQueryParams) Filter(rules []*GettableAlertingRule) []*GettableAlertingRule {
+	var ret []*GettableAlertingRule
 	for _, rule := range rules {
 		if rule == nil {
 			continue
@@ -121,8 +155,8 @@ func (q *AlertingRuleQuery) Filter(rules []*AlertingRule) []*AlertingRule {
 	return ret
 }
 
-func (q *AlertingRuleQuery) matches(rule *AlertingRule) bool {
-	if q.Name != "" && !strings.Contains(rule.Name, q.Name) {
+func (q *AlertingRuleQueryParams) matches(rule *GettableAlertingRule) bool {
+	if q.NameContainFilter != "" && !strings.Contains(rule.Name, q.NameContainFilter) {
 		return false
 	}
 	if q.State != "" && q.State != rule.State {
@@ -147,16 +181,24 @@ func (q *AlertingRuleQuery) matches(rule *AlertingRule) bool {
 	return true
 }
 
-func (q *AlertingRuleQuery) Sort(rules []*AlertingRule) {
-	idCompare := func(left, right *AlertingRule) bool {
-		return left.Id <= right.Id
+// AlertingRuleIdCompare defines the default order for the alerting rules.
+// For the alerting rule list, it guarantees a stable sort. For the custom alerting rules with possible same names
+// and the builtin alerting rules with possible same ids, it guarantees the stability of get operations.
+func AlertingRuleIdCompare(leftId, rightId string) bool {
+	// default to ascending order of id
+	return leftId <= rightId
+}
+
+func (q *AlertingRuleQueryParams) Sort(rules []*GettableAlertingRule) {
+	idCompare := func(left, right *GettableAlertingRule) bool {
+		return AlertingRuleIdCompare(left.Id, right.Id)
 	}
 	var compare = idCompare
 	if q != nil {
 		reverse := q.SortType == "desc"
 		switch q.SortField {
 		case "name":
-			compare = func(left, right *AlertingRule) bool {
+			compare = func(left, right *GettableAlertingRule) bool {
 				if c := strings.Compare(left.Name, right.Name); c != 0 {
 					if reverse {
 						return c > 0
@@ -166,7 +208,7 @@ func (q *AlertingRuleQuery) Sort(rules []*AlertingRule) {
 				return idCompare(left, right)
 			}
 		case "lastEvaluation":
-			compare = func(left, right *AlertingRule) bool {
+			compare = func(left, right *GettableAlertingRule) bool {
 				if left.LastEvaluation == nil {
 					if right.LastEvaluation != nil {
 						return false
@@ -184,7 +226,7 @@ func (q *AlertingRuleQuery) Sort(rules []*AlertingRule) {
 				return idCompare(left, right)
 			}
 		case "evaluationTime":
-			compare = func(left, right *AlertingRule) bool {
+			compare = func(left, right *GettableAlertingRule) bool {
 				if left.EvaluationDurationSeconds != right.EvaluationDurationSeconds {
 					if reverse {
 						return left.EvaluationDurationSeconds > right.EvaluationDurationSeconds
@@ -200,7 +242,7 @@ func (q *AlertingRuleQuery) Sort(rules []*AlertingRule) {
 	})
 }
 
-func (q *AlertingRuleQuery) Sub(rules []*AlertingRule) []*AlertingRule {
+func (q *AlertingRuleQueryParams) Sub(rules []*GettableAlertingRule) []*GettableAlertingRule {
 	start, stop := 0, 10
 	if q != nil {
 		start, stop = q.Offset, q.Offset+q.Limit
@@ -215,35 +257,16 @@ func (q *AlertingRuleQuery) Sub(rules []*AlertingRule) []*AlertingRule {
 	return nil
 }
 
-func ParseAlertingRuleQueryParameter(req *restful.Request) (*AlertingRuleQuery, error) {
-	var (
-		q   = &AlertingRuleQuery{}
-		err error
-	)
-
-	q.Name = req.QueryParameter("name")
-	q.State = req.QueryParameter("state")
-	q.Health = req.QueryParameter("health")
-	q.Offset, _ = strconv.Atoi(req.QueryParameter("offset"))
-	q.Limit, err = strconv.Atoi(req.QueryParameter("limit"))
-	if err != nil {
-		q.Limit = 10
-	}
-	q.LabelEqualFilters, q.LabelContainFilters = parseLabelFilters(req)
-	q.SortField = req.QueryParameter("sort_field")
-	q.SortType = req.QueryParameter("sort_type")
-	return q, nil
-}
-
-type AlertQuery struct {
+type AlertQueryParams struct {
 	State               string
 	LabelEqualFilters   map[string]string
 	LabelContainFilters map[string]string
-	Offset              int
-	Limit               int
+
+	Offset int
+	Limit  int
 }
 
-func (q *AlertQuery) Filter(alerts []*Alert) []*Alert {
+func (q *AlertQueryParams) Filter(alerts []*Alert) []*Alert {
 	var ret []*Alert
 	for _, alert := range alerts {
 		if alert == nil {
@@ -256,7 +279,7 @@ func (q *AlertQuery) Filter(alerts []*Alert) []*Alert {
 	return ret
 }
 
-func (q *AlertQuery) matches(alert *Alert) bool {
+func (q *AlertQueryParams) matches(alert *Alert) bool {
 	if q.State != "" && q.State != alert.State {
 		return false
 	}
@@ -276,7 +299,7 @@ func (q *AlertQuery) matches(alert *Alert) bool {
 	return true
 }
 
-func (q *AlertQuery) Sort(alerts []*Alert) {
+func (q *AlertQueryParams) Sort(alerts []*Alert) {
 	compare := func(left, right *Alert) bool {
 		if left.ActiveAt == nil {
 			if right.ActiveAt != nil {
@@ -296,7 +319,7 @@ func (q *AlertQuery) Sort(alerts []*Alert) {
 	})
 }
 
-func (q *AlertQuery) Sub(alerts []*Alert) []*Alert {
+func (q *AlertQueryParams) Sub(alerts []*Alert) []*Alert {
 	start, stop := 0, 10
 	if q != nil {
 		start, stop = q.Offset, q.Offset+q.Limit
@@ -311,9 +334,30 @@ func (q *AlertQuery) Sub(alerts []*Alert) []*Alert {
 	return nil
 }
 
-func ParseAlertQueryParameter(req *restful.Request) (*AlertQuery, error) {
+func ParseAlertingRuleQueryParams(req *restful.Request) (*AlertingRuleQueryParams, error) {
 	var (
-		q   = &AlertQuery{}
+		q   = &AlertingRuleQueryParams{}
+		err error
+	)
+
+	q.NameContainFilter = req.QueryParameter("name")
+	q.State = req.QueryParameter("state")
+	q.Health = req.QueryParameter("health")
+	q.Offset, _ = strconv.Atoi(req.QueryParameter("offset"))
+	q.Limit, err = strconv.Atoi(req.QueryParameter("limit"))
+	if err != nil {
+		q.Limit = 10
+		err = nil
+	}
+	q.LabelEqualFilters, q.LabelContainFilters = parseLabelFilters(req)
+	q.SortField = req.QueryParameter("sort_field")
+	q.SortType = req.QueryParameter("sort_type")
+	return q, err
+}
+
+func ParseAlertQueryParams(req *restful.Request) (*AlertQueryParams, error) {
+	var (
+		q   = &AlertQueryParams{}
 		err error
 	)
 
@@ -322,9 +366,10 @@ func ParseAlertQueryParameter(req *restful.Request) (*AlertQuery, error) {
 	q.Limit, err = strconv.Atoi(req.QueryParameter("limit"))
 	if err != nil {
 		q.Limit = 10
+		err = nil
 	}
 	q.LabelEqualFilters, q.LabelContainFilters = parseLabelFilters(req)
-	return q, nil
+	return q, err
 }
 
 func parseLabelFilters(req *restful.Request) (map[string]string, map[string]string) {

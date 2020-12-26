@@ -6,7 +6,6 @@ import (
 	promresourcesv1 "github.com/coreos/prometheus-operator/pkg/apis/monitoring/v1"
 	"github.com/google/go-cmp/cmp"
 	"github.com/prometheus/prometheus/rules"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"kubesphere.io/kubesphere/pkg/api/customalerting/v1alpha1"
 	"kubesphere.io/kubesphere/pkg/simple/client/customalerting"
@@ -14,44 +13,41 @@ import (
 
 func TestMixAlertingRules(t *testing.T) {
 	var tests = []struct {
-		description          string
-		ruleNamespace        string
-		promRuleResources    []*promresourcesv1.PrometheusRule
-		thanosRuleResources  []*promresourcesv1.PrometheusRule
-		promCliRuleGroups    []*customalerting.RuleGroup
-		thanosCliRuleGroups  []*customalerting.RuleGroup
-		hasPromRuler         bool
-		hasThanosRuler       bool
-		level                v1alpha1.RuleLevel
-		promRulerExtLabels   func() map[string]string
-		thanosRulerExtLabels func() map[string]string
-		expected             []*v1alpha1.AlertingRule
+		description       string
+		ruleNamespace     string
+		resourceRuleChunk *ResourceRuleChunk
+		ruleGroups        []*customalerting.RuleGroup
+		extLabels         func() map[string]string
+		expected          []*v1alpha1.GettableAlertingRule
 	}{{
-		description:    "mix custom rules",
-		ruleNamespace:  "test",
-		hasThanosRuler: true,
-		thanosRuleResources: []*promresourcesv1.PrometheusRule{{
-			ObjectMeta: metav1.ObjectMeta{
-				Namespace: "test",
-				Name:      "custom-alerting-rule-jqbgn",
-				Labels: map[string]string{
-					"thanosruler":                "thanos-ruler",
-					"role":                       "thanos-alerting-rules",
-					"custom-alerting-rule-level": "namespace",
+		description:   "mix custom rules",
+		ruleNamespace: "test",
+		resourceRuleChunk: &ResourceRuleChunk{
+			Level:  v1alpha1.RuleLevelNamespace,
+			Custom: true,
+			ResourceRulesMap: map[string]*ResourceRules{
+				"custom-alerting-rule-jqbgn": &ResourceRules{
+					GroupSet: map[string]struct{}{"alerting.custom.defaults": struct{}{}},
+					IdRules: map[string]*ResourceRule{
+						"f89836879157ca88": &ResourceRule{
+							ResourceName: "custom-alerting-rule-jqbgn",
+							Group:        "alerting.custom.defaults",
+							Id:           "f89836879157ca88",
+							Rule: &promresourcesv1.Rule{
+								Alert: "TestCPUUsageHigh",
+								Expr:  intstr.FromString(`namespace:workload_cpu_usage:sum{namespace="test"} > 1`),
+								For:   "1m",
+								Labels: map[string]string{
+									LabelKeyInternalRuleAlias:       "The alias is here",
+									LabelKeyInternalRuleDescription: "The description is here",
+								},
+							},
+						},
+					},
 				},
 			},
-			Spec: promresourcesv1.PrometheusRuleSpec{
-				Groups: []promresourcesv1.RuleGroup{{
-					Name: "alerting.custom.defaults",
-					Rules: []promresourcesv1.Rule{{
-						Alert: "TestCPUUsageHigh",
-						Expr:  intstr.FromString(`namespace:workload_cpu_usage:sum{namespace="test"} > 1`),
-						For:   "1m",
-					}},
-				}},
-			},
-		}},
-		thanosCliRuleGroups: []*customalerting.RuleGroup{{
+		},
+		ruleGroups: []*customalerting.RuleGroup{{
 			Name: "alerting.custom.defaults",
 			File: "/etc/thanos/rules/thanos-ruler-thanos-ruler-rulefiles-0/test-custom-alerting-rule-jqbgn.yaml",
 			Rules: []*customalerting.AlertingRule{{
@@ -60,32 +56,34 @@ func TestMixAlertingRules(t *testing.T) {
 				Duration: 60,
 				Health:   string(rules.HealthGood),
 				State:    stateInactiveString,
+				Labels: map[string]string{
+					LabelKeyInternalRuleAlias:       "The alias is here",
+					LabelKeyInternalRuleDescription: "The description is here",
+				},
 			}},
 		}},
-		expected: []*v1alpha1.AlertingRule{{
-			Id:       "f1e5fa3dd05ab00c-cbf29ce484222325",
-			Name:     "TestCPUUsageHigh",
-			Query:    `namespace:workload_cpu_usage:sum{namespace="test"} > 1`,
-			Health:   string(rules.HealthGood),
-			State:    stateInactiveString,
-			Duration: "1m",
-			Custom:   true,
+		expected: []*v1alpha1.GettableAlertingRule{{
+			AlertingRuleQualifier: v1alpha1.AlertingRuleQualifier{
+				Id:     "f89836879157ca88",
+				Name:   "TestCPUUsageHigh",
+				Level:  v1alpha1.RuleLevelNamespace,
+				Custom: true,
+			},
+			AlertingRuleProps: v1alpha1.AlertingRuleProps{
+				Query:    `namespace:workload_cpu_usage:sum{namespace="test"} > 1`,
+				Duration: "1m",
+				Labels:   map[string]string{},
+			},
+			Alias:       "The alias is here",
+			Description: "The description is here",
+			Health:      string(rules.HealthGood),
+			State:       stateInactiveString,
 		}},
 	}}
 
 	for _, test := range tests {
 		t.Run(test.description, func(t *testing.T) {
-			rules, err := MixAlertingRules(
-				test.ruleNamespace,
-				test.promRuleResources,
-				test.thanosRuleResources,
-				test.promCliRuleGroups,
-				test.thanosCliRuleGroups,
-				test.level,
-				test.hasPromRuler,
-				test.hasThanosRuler,
-				test.promRulerExtLabels,
-				test.thanosRulerExtLabels)
+			rules, err := MixAlertingRules(test.ruleNamespace, test.resourceRuleChunk, test.ruleGroups, test.extLabels)
 			if err != nil {
 				t.Fatal(err)
 			}
