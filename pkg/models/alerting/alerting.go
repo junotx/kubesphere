@@ -563,7 +563,8 @@ func (o *operator) DeleteCustomAlertingRule(ctx context.Context, namespace, name
 		return v2alpha1.ErrAlertingRuleNotFound
 	}
 
-	return ruler.DeleteAlertingRule(ctx, ruleNamespace, extraRuleResourceSelector, resourceRule.Group, name)
+	return ruler.DeleteAlertingRule(ctx, ruleNamespace, extraRuleResourceSelector,
+		&rules.ResourceRuleItem{Group: resourceRule.Group, Rule: resourceRule.Rule})
 }
 
 // getPrometheusRuler gets the cluster-in prometheus
