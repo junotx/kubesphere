@@ -98,12 +98,12 @@ require (
 	k8s.io/kubectl v0.18.6
 	k8s.io/metrics v0.18.6
 	k8s.io/utils v0.0.0-20200603063816-c1c6865ac451
+	kubesphere.io/client-go v0.0.0
 	openpitrix.io/openpitrix v0.4.9-0.20200611125425-ae07f141e797
 	sigs.k8s.io/application v0.8.4-0.20201016185654-c8e2959e57a0
 	sigs.k8s.io/controller-runtime v0.6.4
 	sigs.k8s.io/controller-tools v0.4.0
 	sigs.k8s.io/kubefed v0.4.0
-	kubesphere.io/client-go v0.0.0
 )
 
 replace (
@@ -735,6 +735,8 @@ replace (
 	k8s.io/kubectl => k8s.io/kubectl v0.18.6
 	k8s.io/metrics => k8s.io/metrics v0.18.6
 	k8s.io/utils => k8s.io/utils v0.0.0-20200603063816-c1c6865ac451
+
+	kubesphere.io/client-go => ./staging/src/kubesphere.io/client-go
 	kubesphere.io/im => kubesphere.io/im v0.1.0
 	openpitrix.io/iam => openpitrix.io/iam v0.1.0
 	openpitrix.io/libqueue => openpitrix.io/libqueue v0.4.1
@@ -758,6 +760,4 @@ replace (
 	sigs.k8s.io/yaml => sigs.k8s.io/yaml v1.2.0
 	sourcegraph.com/sourcegraph/appdash => sourcegraph.com/sourcegraph/appdash v0.0.0-20190731080439-ebfcffb1b5c0
 	vbom.ml/util => vbom.ml/util v0.0.0-20160121211510-db5cfe13f5cc
-
-	kubesphere.io/client-go => ./staging/src/kubesphere.io/client-go
 )

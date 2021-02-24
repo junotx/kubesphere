@@ -26,7 +26,7 @@ const (
 	customAlertingRuleResourcePrefix = "custom-alerting-rule-"
 
 	customRuleGroupDefaultPrefix = "alerting.custom.defaults."
-	customRuleGroupSize          = 30
+	customRuleGroupSize          = 20
 )
 
 var (
@@ -413,6 +413,10 @@ func (r *ThanosRuler) addAlertingRule(ctx context.Context, ruleNamespace *corev1
 		return nil
 	}
 	// create a new rule resource and add rule into it when all existing rule resources are full.
+	group := ruleItem.Group
+	if group == "" {
+		group = fmt.Sprintf("%s%d", customRuleGroupDefaultPrefix, 0)
+	}
 	newPromRule := promresourcesv1.PrometheusRule{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace:    ruleNamespace.Name,
@@ -421,7 +425,7 @@ func (r *ThanosRuler) addAlertingRule(ctx context.Context, ruleNamespace *corev1
 		},
 		Spec: promresourcesv1.PrometheusRuleSpec{
 			Groups: []promresourcesv1.RuleGroup{{
-				Name:  ruleItem.Group,
+				Name:  group,
 				Rules: []promresourcesv1.Rule{*ruleItem.Rule},
 			}},
 		},
